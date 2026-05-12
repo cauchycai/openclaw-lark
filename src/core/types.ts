@@ -76,6 +76,7 @@ export interface FeishuFooterConfig {
   cache?: boolean;
   context?: boolean;
   model?: boolean;
+  balanceUsage?: boolean;
 }
 
 // ---------------------------------------------------------------------------
