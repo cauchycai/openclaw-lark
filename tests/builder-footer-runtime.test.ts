@@ -105,17 +105,17 @@ describe('formatFooterRuntimeSegments', () => {
     expect(errored.detailEn).toEqual([]);
   });
 
-  it('renders sub-cent balance usage without raw angle brackets', () => {
+  it('renders sub-cent balance usage with a less-than sign', () => {
     const result = formatFooterRuntimeSegments({
       footer: { status: true, elapsed: true, balanceUsage: true },
       elapsedMs: 1000,
       metrics: { balanceUsageRmb: '小于0.01元' },
     });
 
-    expect(result.primaryZh).toEqual(['已完成', '耗时 1.0s', '消耗 小于0.01元']);
-    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 1.0s', 'Cost Under 0.01 RMB']);
-    expect(result.primaryZh.join(' · ')).not.toContain('<');
-    expect(result.primaryEn.join(' · ')).not.toContain('<');
+    expect(result.primaryZh).toEqual(['已完成', '耗时 1.0s', '消耗 < 0.01元']);
+    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 1.0s', 'Cost < 0.01 RMB']);
+    expect(result.primaryZh.join(' · ')).toContain('<');
+    expect(result.primaryEn.join(' · ')).toContain('<');
   });
 });
 
