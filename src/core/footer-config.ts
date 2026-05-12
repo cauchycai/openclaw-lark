@@ -17,8 +17,8 @@ import type { FeishuFooterConfig } from './types';
 /**
  * The default footer configuration.
  *
- * By default all metadata items are hidden — neither status text
- * ("已完成" / "出错" / "已停止") nor elapsed time are shown.
+ * By default all metadata items are hidden except balance usage, which is
+ * shown unless explicitly disabled.
  */
 export const DEFAULT_FOOTER_CONFIG: Required<FeishuFooterConfig> = {
   status: false,
@@ -27,6 +27,7 @@ export const DEFAULT_FOOTER_CONFIG: Required<FeishuFooterConfig> = {
   cache: false,
   context: false,
   model: false,
+  balanceUsage: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,5 +49,6 @@ export function resolveFooterConfig(cfg?: FeishuFooterConfig): Required<FeishuFo
     cache: cfg.cache ?? DEFAULT_FOOTER_CONFIG.cache,
     context: cfg.context ?? DEFAULT_FOOTER_CONFIG.context,
     model: cfg.model ?? DEFAULT_FOOTER_CONFIG.model,
+    balanceUsage: cfg.balanceUsage ?? DEFAULT_FOOTER_CONFIG.balanceUsage,
   };
 }

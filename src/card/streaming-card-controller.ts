@@ -20,6 +20,7 @@ import { larkLogger } from '../core/lark-logger';
 import { LarkClient } from '../core/lark-client';
 import { registerShutdownHook } from '../core/shutdown-hooks';
 import { sendCardFeishu, updateCardFeishu } from '../messaging/outbound/send';
+import { type BalanceUsageTracker, createBalanceUsageTracker } from './balance-usage';
 import {
   STREAMING_ELEMENT_ID,
   buildCardContent,
@@ -123,6 +124,7 @@ export class StreamingCardController {
   private cardCreationPromise: Promise<void> | null = null;
   private disposeShutdownHook: (() => void) | null = null;
   private readonly dispatchStartTime = Date.now();
+  private readonly balanceUsageTracker: BalanceUsageTracker | null;
 
   // ---- Injected dependencies ----
   private readonly deps: StreamingCardDeps;
@@ -132,8 +134,32 @@ export class StreamingCardController {
   }
 
   private needsFooterMetrics(): boolean {
+    return this.needsSessionFooterMetrics() || this.deps.resolvedFooter.balanceUsage;
+  }
+
+  private needsSessionFooterMetrics(): boolean {
     const footer = this.deps.resolvedFooter;
     return footer.tokens || footer.cache || footer.context || footer.model;
+  }
+
+  private async getFooterMetrics(): Promise<FooterSessionMetrics | undefined> {
+    const metrics = this.needsSessionFooterMetrics() ? await this.getFooterSessionMetrics() : undefined;
+    const balanceUsageRmb = await this.balanceUsageTracker?.formatUsageRmb();
+    log.info('footer metrics assembled', {
+      sessionKey: this.deps.sessionKey,
+      footer: this.deps.resolvedFooter,
+      hasSessionMetrics: !!metrics,
+      sessionMetrics: metrics ?? null,
+      balanceUsageEnabled: this.deps.resolvedFooter.balanceUsage,
+      balanceUsageRmb: balanceUsageRmb ?? null,
+    });
+    if (!balanceUsageRmb) {
+      return metrics;
+    }
+    return {
+      ...(metrics ?? {}),
+      balanceUsageRmb,
+    };
   }
 
   private async getFooterSessionMetrics(): Promise<FooterSessionMetrics | undefined> {
@@ -275,6 +301,13 @@ export class StreamingCardController {
 
   constructor(deps: StreamingCardDeps) {
     this.deps = deps;
+    log.info('streaming card controller init', {
+      sessionKey: deps.sessionKey,
+      accountId: deps.accountId ?? 'default',
+      footer: deps.resolvedFooter,
+      balanceUsageTrackerEnabled: deps.resolvedFooter.balanceUsage,
+    });
+    this.balanceUsageTracker = deps.resolvedFooter.balanceUsage ? createBalanceUsageTracker(log, deps.cfg) : null;
 
     this.guard = new UnavailableGuard({
       replyToMessageId: deps.replyToMessageId,
@@ -606,7 +639,7 @@ export class StreamingCardController {
     if (this.cardCreationPromise) await this.cardCreationPromise;
 
     const errorEffectiveCardId = this.cardKit.cardKitCardId ?? this.cardKit.originalCardKitCardId;
-    const footerMetrics = this.needsFooterMetrics() ? await this.getFooterSessionMetrics() : undefined;
+    const footerMetrics = this.needsFooterMetrics() ? await this.getFooterMetrics() : undefined;
     const toolUseDisplay = this.computeToolUseDisplay();
     try {
       if (this.cardKit.cardMessageId) {
@@ -706,7 +739,7 @@ export class StreamingCardController {
           },
           this.imageResolver,
         );
-        const footerMetrics = this.needsFooterMetrics() ? await this.getFooterSessionMetrics() : undefined;
+        const footerMetrics = this.needsFooterMetrics() ? await this.getFooterMetrics() : undefined;
 
         const completeCard = buildCardContent('complete', {
           text: terminalContent.text,
@@ -788,7 +821,7 @@ export class StreamingCardController {
         },
         this.imageResolver,
       );
-      const footerMetrics = this.needsFooterMetrics() ? await this.getFooterSessionMetrics() : undefined;
+      const footerMetrics = this.needsFooterMetrics() ? await this.getFooterMetrics() : undefined;
       if (effectiveCardId) {
         const abortCardContent = buildCardContent('complete', {
           text: terminalContent.text,

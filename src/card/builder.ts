@@ -220,6 +220,7 @@ export function formatFooterRuntimeSegments(params: {
     cache?: boolean;
     context?: boolean;
     model?: boolean;
+    balanceUsage?: boolean;
   };
   metrics?: FooterSessionMetrics;
   elapsedMs?: number;
@@ -251,6 +252,15 @@ export function formatFooterRuntimeSegments(params: {
     const d = formatElapsed(elapsedMs);
     primaryZh.push(`耗时 ${d}`);
     primaryEn.push(`Elapsed ${d}`);
+  }
+
+  if (footer?.balanceUsage && metrics?.balanceUsageRmb) {
+    primaryZh.push(`消耗 ${metrics.balanceUsageRmb}`);
+    const balanceUsageEn =
+      metrics.balanceUsageRmb === '小于0.01元'
+        ? 'Under 0.01 RMB'
+        : metrics.balanceUsageRmb.replace(/元$/u, ' RMB');
+    primaryEn.push(`Cost ${balanceUsageEn}`);
   }
 
   if (footer?.model && metrics?.model) {
@@ -334,6 +344,7 @@ export function buildCardContent(
       cache?: boolean;
       context?: boolean;
       model?: boolean;
+      balanceUsage?: boolean;
     };
     footerMetrics?: FooterSessionMetrics;
   } = {},
@@ -454,6 +465,7 @@ function buildCompleteCard(params: {
     cache?: boolean;
     context?: boolean;
     model?: boolean;
+    balanceUsage?: boolean;
   };
   footerMetrics?: FooterSessionMetrics;
 }): FeishuCard {
@@ -529,7 +541,7 @@ function buildCompleteCard(params: {
   });
 
   // Footer meta-info: split into two lines for readability.
-  // Line 1 (primary): status · elapsed · model
+  // Line 1 (primary): status · elapsed · balance usage · model
   // Line 2 (detail):  tokens · cache · context
   const fp = formatFooterRuntimeSegments({
     footer,

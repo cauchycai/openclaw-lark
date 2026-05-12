@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { formatRmbUsage } from '../src/card/balance-usage';
 import { buildCardContent, compactNumber, formatFooterRuntimeSegments } from '../src/card/builder';
 import type { ToolUseDisplayStep } from '../src/card/tool-use-display';
 
@@ -23,6 +24,18 @@ describe('compactNumber', () => {
 });
 
 // ---------------------------------------------------------------------------
+// formatRmbUsage
+// ---------------------------------------------------------------------------
+
+describe('formatRmbUsage', () => {
+  it('formats RMB usage with two decimals and the less-than-one-fen threshold', () => {
+    expect(formatRmbUsage(2.75)).toBe('18.70元');
+    expect(formatRmbUsage(0.001)).toBe('小于0.01元');
+    expect(formatRmbUsage(0.001)).not.toContain('<');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // formatFooterRuntimeSegments
 // ---------------------------------------------------------------------------
 
@@ -36,6 +49,7 @@ describe('formatFooterRuntimeSegments', () => {
         cache: true,
         context: true,
         model: true,
+        balanceUsage: true,
       },
       elapsedMs: 12_300,
       metrics: {
@@ -47,12 +61,13 @@ describe('formatFooterRuntimeSegments', () => {
         totalTokensFresh: true,
         contextTokens: 128000,
         model: 'claude-opus-4-6',
+        balanceUsageRmb: '18.70元',
       },
     });
 
-    // Primary line: status, elapsed, model
-    expect(result.primaryZh).toEqual(['已完成', '耗时 12.3s', 'claude-opus-4-6']);
-    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 12.3s', 'claude-opus-4-6']);
+    // Primary line: status, elapsed, balance usage, model
+    expect(result.primaryZh).toEqual(['已完成', '耗时 12.3s', '消耗 18.70元', 'claude-opus-4-6']);
+    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 12.3s', 'Cost 18.70 RMB', 'claude-opus-4-6']);
 
     // Detail line: tokens, cache, context
     expect(result.detailZh).toEqual(['↑ 1.2k ↓ 3.5k', '缓存 800/200 (36%)', '上下文 4.5k/128k (4%)']);
@@ -88,6 +103,19 @@ describe('formatFooterRuntimeSegments', () => {
     expect(errored.primaryEn).toEqual(['Error', 'Elapsed 1.0s']);
     expect(errored.detailZh).toEqual([]);
     expect(errored.detailEn).toEqual([]);
+  });
+
+  it('renders sub-cent balance usage without raw angle brackets', () => {
+    const result = formatFooterRuntimeSegments({
+      footer: { status: true, elapsed: true, balanceUsage: true },
+      elapsedMs: 1000,
+      metrics: { balanceUsageRmb: '小于0.01元' },
+    });
+
+    expect(result.primaryZh).toEqual(['已完成', '耗时 1.0s', '消耗 小于0.01元']);
+    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 1.0s', 'Cost Under 0.01 RMB']);
+    expect(result.primaryZh.join(' · ')).not.toContain('<');
+    expect(result.primaryEn.join(' · ')).not.toContain('<');
   });
 });
 
