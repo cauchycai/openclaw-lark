@@ -164,6 +164,7 @@ export interface FooterSessionMetrics {
   totalTokensFresh?: boolean;
   contextTokens?: number;
   model?: string;
+  balanceUsageRmb?: string;
 }
 
 export interface StreamingCardDeps {
