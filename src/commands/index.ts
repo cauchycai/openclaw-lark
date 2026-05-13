@@ -6,7 +6,7 @@
  */
 
 import type { OpenClawConfig, OpenClawPluginApi } from 'openclaw/plugin-sdk';
-import { getPluginVersion } from '../core/version';
+import { getPluginVersionDisplay } from '../core/version';
 import { formatDiagReportText, runDiagnosis } from './diagnose';
 import { runFeishuDoctor } from './doctor';
 import { runFeishuAuth } from './auth';
@@ -121,10 +121,10 @@ export function runFeishuStart(config: OpenClawConfig, locale: FeishuLocale = 'z
   }
 
   if (warnings.length > 0) {
-    return t.startWithWarnings(getPluginVersion(), warnings.join('\n\n'));
+    return t.startWithWarnings(getPluginVersionDisplay(), warnings.join('\n\n'));
   }
 
-  return t.startOk(getPluginVersion());
+  return t.startOk(getPluginVersionDisplay());
 }
 
 /**
@@ -143,7 +143,7 @@ export function runFeishuStartI18n(config: OpenClawConfig): Record<FeishuLocale,
 export function getFeishuHelp(locale: FeishuLocale = 'zh_cn'): string {
   const t = T[locale];
   return (
-    `${t.helpTitle(getPluginVersion())}\n\n` +
+    `${t.helpTitle(getPluginVersionDisplay())}\n\n` +
     `${t.helpUsage}\n` +
     `  ${t.helpStart}\n` +
     `  ${t.helpAuth}\n` +

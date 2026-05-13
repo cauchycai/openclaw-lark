@@ -4,15 +4,71 @@
  *
  * 插件版本号管理
  *
- * 从 package.json 读取版本号并生成 User-Agent 字符串。
+ * 从 package.json 读取版本号并生成显示版本和 User-Agent 字符串。
  */
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
+interface PackageJsonVersionInfo {
+  version?: string;
+  openclawFork?: {
+    name?: string;
+    version?: string;
+  };
+}
+
+interface PluginVersionInfo {
+  upstreamVersion: string;
+  forkName?: string;
+  forkVersion?: string;
+}
+
+/** 缓存的版本信息 */
+let cachedVersionInfo: PluginVersionInfo | undefined;
 /** 缓存的版本号 */
 let cachedVersion: string | undefined;
+
+function readPackageJsonFrom(startDir: string): PackageJsonVersionInfo {
+  let dir = startDir;
+
+  while (true) {
+    const packageJsonPath = join(dir, 'package.json');
+    try {
+      const raw = readFileSync(packageJsonPath, 'utf8');
+      const pkg = JSON.parse(raw) as PackageJsonVersionInfo;
+      if (pkg.version || pkg.openclawFork) return pkg;
+    } catch {
+      // Keep walking up: bundled runtime chunks may live directly under dist/.
+    }
+
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return {};
+}
+
+function readVersionInfo(): PluginVersionInfo {
+  if (cachedVersionInfo) return cachedVersionInfo;
+
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const pkg = readPackageJsonFrom(__dirname);
+    cachedVersionInfo = {
+      upstreamVersion: pkg.version ?? 'unknown',
+      forkName: pkg.openclawFork?.name,
+      forkVersion: pkg.openclawFork?.version,
+    };
+  } catch {
+    cachedVersionInfo = { upstreamVersion: 'unknown' };
+  }
+
+  return cachedVersionInfo;
+}
 
 /**
  * 获取插件版本号（从 package.json 读取）
@@ -22,20 +78,30 @@ let cachedVersion: string | undefined;
 export function getPluginVersion(): string {
   if (cachedVersion) return cachedVersion;
 
-  try {
-    // 当前文件: src/core/version.ts → 向上两级到达项目根目录
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const packageJsonPath = join(__dirname, '..', '..', 'package.json');
+  cachedVersion = readVersionInfo().upstreamVersion;
+  return cachedVersion;
+}
 
-    const raw = readFileSync(packageJsonPath, 'utf8');
-    const pkg = JSON.parse(raw) as { version?: string };
-    cachedVersion = pkg.version ?? 'unknown';
-    return cachedVersion;
-  } catch {
-    cachedVersion = 'unknown';
-    return cachedVersion;
-  }
+/**
+ * 获取用户可见的插件版本信息。
+ */
+export function getPluginVersionDisplay(): string {
+  const { upstreamVersion, forkName, forkVersion } = readVersionInfo();
+  if (!forkVersion) return upstreamVersion;
+
+  const forkLabel = forkName ? `${forkName} ${forkVersion}` : forkVersion;
+  return `upstream ${upstreamVersion} / fork ${forkLabel}`;
+}
+
+function getUserAgentVersion(): string {
+  const { upstreamVersion, forkName, forkVersion } = readVersionInfo();
+  if (!forkVersion) return upstreamVersion;
+
+  const forkPart = [forkName, forkVersion]
+    .filter((part): part is string => Boolean(part))
+    .join('-')
+    .replace(/[^A-Za-z0-9._-]+/g, '-');
+  return `${upstreamVersion}+${forkPart}`;
 }
 
 /**
@@ -65,5 +131,5 @@ export function getPlatform(): string {
  * ```
  */
 export function getUserAgent(): string {
-  return `openclaw-lark/${getPluginVersion()}/${getPlatform()}`;
+  return `openclaw-lark/${getUserAgentVersion()}/${getPlatform()}`;
 }
