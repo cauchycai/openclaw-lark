@@ -33,7 +33,7 @@ import { getStoredToken, tokenStatus } from '../core/token-store';
 import { REQUIRED_APP_SCOPES, TOOL_SCOPES, filterSensitiveScopes } from '../core/tool-scopes';
 import { probeFeishu } from '../channel/probe';
 import { AppScopeCheckFailedError } from '../core/tool-client';
-import { getPluginVersion } from '../core/version';
+import { getPluginVersionDisplay } from '../core/version';
 import { openPlatformDomain } from '../core/domains';
 // TODO: 暂时注释掉，等产品策略明确后再放开
 // import { checkMultiAccountIsolation, formatIsolationWarning } from "../core/security-check";
@@ -692,7 +692,9 @@ export async function runFeishuDoctor(
   // 2. 生成报告头部
   lines.push(t.reportTitle);
   lines.push('');
-  lines.push(`${t.pluginVersionLabel}: ${getPluginVersion()}  |  ${t.diagTimeLabel}: ${formatTimestamp(new Date())}`);
+  lines.push(
+    `${t.pluginVersionLabel}: ${getPluginVersionDisplay()}  |  ${t.diagTimeLabel}: ${formatTimestamp(new Date())}`
+  );
   lines.push('');
   lines.push('---');
   lines.push('');
