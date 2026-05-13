@@ -37,6 +37,7 @@ function resolveGlobalConfig(config: OpenClawConfig): OpenClawConfig {
 import { assertLarkOk, formatLarkError } from '../core/api-error';
 import { resolveAnyEnabledToolsConfig } from '../core/tools-config';
 import type { LarkAccount } from '../core/types';
+import { getPluginVersionDisplay } from '../core/version';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,7 +81,6 @@ interface DiagReport {
 // Constants
 // ---------------------------------------------------------------------------
 
-const PLUGIN_VERSION = '2026.2.10';
 const LOG_READ_BYTES = 256 * 1024; // read last 256KB of log
 const MAX_ERROR_LINES = 20;
 /** Matches a timestamped log line: 2026-02-13T09:23:35.038Z [level]: ... */
@@ -337,7 +337,7 @@ export async function runDiagnosis(params: { config: OpenClawConfig; logger?: Di
       nodeVersion: process.version,
       platform: process.platform,
       arch: process.arch,
-      pluginVersion: PLUGIN_VERSION,
+      pluginVersion: getPluginVersionDisplay(),
     },
     accounts: accountResults,
     toolsRegistered: tools,
