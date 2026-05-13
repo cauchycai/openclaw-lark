@@ -41,7 +41,7 @@
     "format:check": "prettier --check src/**/*.ts"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.60.0",
+    "@larksuiteoapi/node-sdk": "1.60.0",
     "@sinclair/typebox": "0.34.48",
     "image-size": "^2.0.2",
     "undici-types": "^8.1.0",
