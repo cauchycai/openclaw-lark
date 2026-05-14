@@ -27,7 +27,7 @@ import { isCardTableLimitError } from './card-error';
 import type { FooterSessionMetrics } from './reply-dispatcher-types';
 import type { CreateFeishuReplyDispatcherParams, FeishuReplyDispatcherResult } from './reply-dispatcher-types';
 import { expandAutoMode, resolveReplyMode, shouldUseCard } from './reply-mode';
-import { StreamingCardController } from './streaming-card-controller';
+import { type ToolCommandOutputPayload, type ToolItemEventPayload, StreamingCardController } from './streaming-card-controller';
 import { UnavailableGuard } from './unavailable-guard';
 
 const log = larkLogger('card/reply-dispatcher');
@@ -477,6 +477,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             onReasoningStream: (payload: ReplyPayload) => controller.onReasoningStream(payload),
             onPartialReply: (payload: ReplyPayload) => controller.onPartialReply(payload),
             onToolStart: (payload: { name?: string; phase?: string }) => controller.onToolStart(payload),
+            onItemEvent: (payload: ToolItemEventPayload) => controller.onItemEvent(payload),
+            onCommandOutput: (payload: ToolCommandOutputPayload) => controller.onCommandOutput(payload),
           }
         : {}),
     },

@@ -9,6 +9,8 @@ const controllerSpies = {
   onDeliver: vi.fn().mockResolvedValue(undefined),
   onReasoningStream: vi.fn().mockResolvedValue(undefined),
   onToolPayload: vi.fn().mockResolvedValue(undefined),
+  onItemEvent: vi.fn().mockResolvedValue(undefined),
+  onCommandOutput: vi.fn().mockResolvedValue(undefined),
   onIdle: vi.fn().mockResolvedValue(undefined),
   abortCard: vi.fn().mockResolvedValue(undefined),
   shouldSkipForUnavailable: vi.fn().mockReturnValue(false),
@@ -111,6 +113,8 @@ vi.mock('../src/card/streaming-card-controller', () => ({
     onDeliver = controllerSpies.onDeliver;
     onReasoningStream = controllerSpies.onReasoningStream;
     onToolPayload = controllerSpies.onToolPayload;
+    onItemEvent = controllerSpies.onItemEvent;
+    onCommandOutput = controllerSpies.onCommandOutput;
     onIdle = controllerSpies.onIdle;
     abortCard = controllerSpies.abortCard;
     shouldSkipForUnavailable = controllerSpies.shouldSkipForUnavailable;
@@ -155,6 +159,8 @@ describe('reply-dispatcher tool_use mode', () => {
     expect(result.replyOptions).not.toHaveProperty('onReasoningEnd');
     expect(result.replyOptions).not.toHaveProperty('onAssistantMessageStart');
     expect(result.replyOptions).toHaveProperty('onToolStart');
+    expect(result.replyOptions).toHaveProperty('onItemEvent');
+    expect(result.replyOptions).toHaveProperty('onCommandOutput');
     expect((result.replyOptions.shouldEmitToolResult as (() => boolean))()).toBe(false);
     expect((result.replyOptions.shouldEmitToolOutput as (() => boolean))()).toBe(false);
 
@@ -250,6 +256,47 @@ describe('reply-dispatcher tool_use mode', () => {
     expect(controllerSpies.onDeliver).not.toHaveBeenCalled();
   });
 
+  it('forwards structured tool progress callbacks to the controller', async () => {
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: 'main',
+      sessionKey: 'agent:main:feishu:dm:user-1',
+      chatId: 'chat-1',
+      accountId: 'default',
+      chatType: 'p2p',
+      replyInThread: false,
+      skipTyping: true,
+      toolUseDisplay: {
+        mode: 'on',
+        showToolUse: true,
+        showToolResultDetails: false,
+        showFullPaths: false,
+      },
+    });
+
+    await (result.replyOptions.onItemEvent as (payload: { itemId: string; name: string; phase: string }) => Promise<void>)({
+      itemId: 'item-1',
+      name: 'read',
+      phase: 'start',
+    });
+    await (result.replyOptions.onCommandOutput as (payload: { toolCallId: string; title: string; phase: string }) => Promise<void>)({
+      toolCallId: 'tool-1',
+      title: 'npm test',
+      phase: 'end',
+    });
+
+    expect(controllerSpies.onItemEvent).toHaveBeenCalledWith({
+      itemId: 'item-1',
+      name: 'read',
+      phase: 'start',
+    });
+    expect(controllerSpies.onCommandOutput).toHaveBeenCalledWith({
+      toolCallId: 'tool-1',
+      title: 'npm test',
+      phase: 'end',
+    });
+  });
+
   it('preserves SDK tool-result emission in static mode', () => {
     replyModeState.mode = 'static';
 
@@ -271,6 +318,8 @@ describe('reply-dispatcher tool_use mode', () => {
     });
 
     expect(result.replyOptions).not.toHaveProperty('onToolStart');
+    expect(result.replyOptions).not.toHaveProperty('onItemEvent');
+    expect(result.replyOptions).not.toHaveProperty('onCommandOutput');
     expect(result.replyOptions).not.toHaveProperty('shouldEmitToolResult');
     expect(result.replyOptions).not.toHaveProperty('shouldEmitToolOutput');
   });
