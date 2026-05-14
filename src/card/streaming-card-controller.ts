@@ -47,7 +47,7 @@ import { FlushController } from './flush-controller';
 import { ImageResolver } from './image-resolver';
 import { optimizeMarkdownStyle } from './markdown-style';
 import { type ToolUseDisplayResult, buildToolUseTitleSuffix, normalizeToolUseDisplay } from './tool-use-display';
-import { clearToolUseTraceRun, getToolUseTraceSteps } from './tool-use-trace-store';
+import { clearToolUseTraceRun, getToolUseTraceSteps, recordToolUseEnd, recordToolUseStart } from './tool-use-trace-store';
 import type {
   CardKitState,
   CardPhase,
@@ -75,6 +75,30 @@ interface TerminalCardTextImageResolver {
 interface TerminalCardContentInput {
   text: string;
   reasoningText?: string;
+}
+
+export interface ToolItemEventPayload {
+  itemId?: string;
+  kind?: string;
+  title?: string;
+  name?: string;
+  phase?: string;
+  status?: string;
+  summary?: string;
+  progressText?: string;
+}
+
+export interface ToolCommandOutputPayload {
+  itemId?: string;
+  phase?: string;
+  title?: string;
+  toolCallId?: string;
+  name?: string;
+  output?: string;
+  status?: string;
+  exitCode?: number | null;
+  durationMs?: number;
+  cwd?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,15 +574,87 @@ export class StreamingCardController {
     if (payload.phase && payload.phase !== 'start') return;
 
     this.markToolUseActivity();
-
-    await this.ensureCardCreated();
-    if (!this.shouldProceed('onToolStart.postCreate')) return;
-    if (!this.cardKit.cardMessageId) return;
-    if (!this.text.accumulatedText && this.cardKit.cardKitCardId) {
-      await this.throttledToolUseStatusUpdate();
-      return;
+    const toolName = normalizeProgressName(payload.name, 'tool');
+    if (toolName) {
+      recordToolUseStart({
+        sessionKey: this.deps.sessionKey,
+        toolName,
+      });
     }
-    await this.throttledCardUpdate();
+
+    await this.updateToolUseCardAfterTrace('onToolStart');
+  }
+
+  async onItemEvent(payload: ToolItemEventPayload): Promise<void> {
+    if (!this.shouldProceed('onItemEvent')) return;
+    if (!this.shouldDisplayToolUse) return;
+
+    this.markToolUseActivity();
+
+    const phase = normalizeProgressName(payload.phase, '');
+    const status = normalizeProgressName(payload.status, '');
+    const toolName = resolveProgressToolName(payload, 'item');
+    const toolCallId = payload.itemId || undefined;
+    const toolParams = buildItemEventParams(payload);
+
+    if (phase === 'end' || phase === 'complete' || phase === 'completed' || isTerminalProgressStatus(status)) {
+      recordToolUseEnd({
+        sessionKey: this.deps.sessionKey,
+        toolName,
+        toolParams,
+        toolCallId,
+        result: payload.summary ?? payload.progressText ?? payload.title,
+        error: isErrorProgressStatus(status) ? (payload.summary ?? payload.progressText ?? status) : undefined,
+      });
+    } else if (phase === 'start' || phase === 'update' || status) {
+      recordToolUseStart({
+        sessionKey: this.deps.sessionKey,
+        toolName,
+        toolParams,
+        toolCallId,
+      });
+    }
+
+    await this.updateToolUseCardAfterTrace('onItemEvent');
+  }
+
+  async onCommandOutput(payload: ToolCommandOutputPayload): Promise<void> {
+    if (!this.shouldProceed('onCommandOutput')) return;
+    if (!this.shouldDisplayToolUse) return;
+
+    this.markToolUseActivity();
+
+    const phase = normalizeProgressName(payload.phase, '');
+    const status = normalizeProgressName(payload.status, '');
+    const toolName = resolveProgressToolName(payload, 'command');
+    const toolCallId = payload.toolCallId || payload.itemId || undefined;
+    const toolParams = buildCommandOutputParams(payload);
+    const failed = isErrorProgressStatus(status) || (typeof payload.exitCode === 'number' && payload.exitCode !== 0);
+
+    if (phase === 'end' || phase === 'complete' || phase === 'completed' || isTerminalProgressStatus(status)) {
+      recordToolUseEnd({
+        sessionKey: this.deps.sessionKey,
+        toolName,
+        toolParams,
+        toolCallId,
+        result: {
+          output: payload.output,
+          exitCode: payload.exitCode,
+          status: payload.status,
+        },
+        error: failed ? summarizeCommandFailure(payload) : undefined,
+        durationMs: payload.durationMs,
+      });
+    } else {
+      recordToolUseStart({
+        sessionKey: this.deps.sessionKey,
+        toolName,
+        toolParams,
+        toolCallId,
+      });
+    }
+
+    await this.updateToolUseCardAfterTrace('onCommandOutput');
   }
 
   async onToolPayload(_payload: ReplyPayload): Promise<void> {
@@ -567,8 +663,12 @@ export class StreamingCardController {
 
     this.markToolUseActivity();
 
+    await this.updateToolUseCardAfterTrace('onToolPayload');
+  }
+
+  private async updateToolUseCardAfterTrace(source: string): Promise<void> {
     await this.ensureCardCreated();
-    if (!this.shouldProceed('onToolPayload.postCreate')) return;
+    if (!this.shouldProceed(`${source}.postCreate`)) return;
     if (!this.cardKit.cardMessageId) return;
     if (!this.text.accumulatedText && this.cardKit.cardKitCardId) {
       await this.throttledToolUseStatusUpdate();
@@ -1214,6 +1314,47 @@ export function prepareTerminalCardContent(
   }
 
   return { text: sanitizedSegments[0] };
+}
+
+function normalizeProgressName(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function resolveProgressToolName(payload: { name?: string; kind?: string; title?: string }, fallback: string): string {
+  return normalizeProgressName(payload.name ?? payload.kind ?? payload.title, fallback);
+}
+
+function buildItemEventParams(payload: ToolItemEventPayload): Record<string, unknown> | undefined {
+  const params: Record<string, unknown> = {};
+  if (payload.title) params.description = payload.title;
+  if (payload.summary) params.summary = payload.summary;
+  if (payload.progressText) params.progress = payload.progressText;
+  if (payload.kind) params.kind = payload.kind;
+  return Object.keys(params).length > 0 ? params : undefined;
+}
+
+function buildCommandOutputParams(payload: ToolCommandOutputPayload): Record<string, unknown> | undefined {
+  const params: Record<string, unknown> = {};
+  if (payload.title) params.command = payload.title;
+  else if (payload.name) params.command = payload.name;
+  if (payload.cwd) params.cwd = payload.cwd;
+  return Object.keys(params).length > 0 ? params : undefined;
+}
+
+function isTerminalProgressStatus(status: string): boolean {
+  return ['done', 'success', 'succeeded', 'complete', 'completed', 'error', 'failed', 'cancelled', 'canceled'].includes(
+    status,
+  );
+}
+
+function isErrorProgressStatus(status: string): boolean {
+  return ['error', 'failed', 'cancelled', 'canceled'].includes(status);
+}
+
+function summarizeCommandFailure(payload: ToolCommandOutputPayload): string | undefined {
+  if (payload.output?.trim()) return payload.output.trim().slice(0, 160);
+  if (typeof payload.exitCode === 'number') return `exit code ${payload.exitCode}`;
+  return payload.status;
 }
 
 function extractApiDetail(err: unknown): string {

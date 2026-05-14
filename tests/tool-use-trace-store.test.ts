@@ -578,4 +578,32 @@ describe('runId-based isolation', () => {
     expect(steps[0]!.toolName).toBe('write');
     expect(steps[0]!.runId).toBe('run-I');
   });
+
+  it('upgrades an unkeyed running start when a keyed progress event follows', () => {
+    const sk = 'dedupe-start';
+    startToolUseTraceRun(sk);
+
+    recordToolUseStart({ sessionKey: sk, toolName: 'bash' });
+    recordToolUseStart({
+      sessionKey: sk,
+      toolName: 'bash',
+      toolCallId: 'tc-1',
+      toolParams: { command: 'npm test' },
+    });
+    recordToolUseEnd({
+      sessionKey: sk,
+      toolName: 'bash',
+      toolCallId: 'tc-1',
+      result: 'ok',
+    });
+
+    const steps = getToolUseTraceSteps(sk);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({
+      toolCallId: 'tc-1',
+      status: 'success',
+      params: { command: 'npm test' },
+      result: 'ok',
+    });
+  });
 });
