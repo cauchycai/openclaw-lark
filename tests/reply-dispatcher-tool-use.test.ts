@@ -34,7 +34,15 @@ vi.mock('../src/core/accounts', () => ({
   getLarkAccount: () => ({ config: { streaming: true } }),
 }));
 vi.mock('../src/core/footer-config', () => ({
-  resolveFooterConfig: () => null,
+  resolveFooterConfig: () => ({
+    status: false,
+    elapsed: false,
+    tokens: false,
+    cache: false,
+    context: false,
+    model: false,
+    balanceUsage: false,
+  }),
 }));
 vi.mock('../src/core/lark-client', () => ({
   LarkClient: {
