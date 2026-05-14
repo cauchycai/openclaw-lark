@@ -2,10 +2,14 @@
  * Tests for pure utility functions exported from src/card/builder.ts.
  */
 
-import { describe, expect, it } from 'vitest';
-import { formatRmbUsage } from '../src/card/balance-usage';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createBalanceUsageTracker, formatRmbUsage } from '../src/card/balance-usage';
 import { buildCardContent, compactNumber, formatFooterRuntimeSegments } from '../src/card/builder';
 import type { ToolUseDisplayStep } from '../src/card/tool-use-display';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 // ---------------------------------------------------------------------------
 // compactNumber
@@ -32,6 +36,36 @@ describe('formatRmbUsage', () => {
     expect(formatRmbUsage(2.75)).toBe('18.70元');
     expect(formatRmbUsage(0.001)).toBe('小于0.01元');
     expect(formatRmbUsage(0.001)).not.toContain('<');
+  });
+});
+
+describe('createBalanceUsageTracker', () => {
+  it('calculates usage from cumulative current_month_usage_in_usd deltas', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: { current_month_usage_in_usd: 10.25, current_month_remaining_quota_in_usd: null } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: { current_month_usage_in_usd: 13, current_month_remaining_quota_in_usd: null } }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const tracker = createBalanceUsageTracker(
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as never,
+      {
+        channels: { feishu: {} },
+        models: { providers: { eaglelab: { apiKey: 'sk-test' } } },
+      } as never,
+    );
+
+    await expect(tracker.formatUsageRmb()).resolves.toBe('18.70元');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

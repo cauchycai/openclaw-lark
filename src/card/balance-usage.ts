@@ -5,7 +5,7 @@ import { getResolvedConfig } from '../core/lark-client';
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_ENDPOINT = 'https://live-turing.cn.llm.tcljd.com/api/v1/users/me/budget/usage/summary';
 const DEFAULT_API_KEY_ENV = 'EAGLELAB_API_KEY';
-const DEFAULT_BALANCE_PATH = 'data.current_month_remaining_quota_in_usd';
+const DEFAULT_USAGE_PATH = 'data.current_month_usage_in_usd';
 const DEFAULT_CLIENT = 'tcl-aigc-portal';
 const DEFAULT_ENVIRONMENT = 'live';
 const RMB_PER_USD = 6.8;
@@ -52,7 +52,7 @@ function readPath(root: unknown, path: string): unknown {
   }, root);
 }
 
-function parseBalance(value: unknown): number | undefined {
+function parseUsage(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
   }
@@ -68,16 +68,16 @@ export function formatRmbUsage(usdValue: number): string {
   return rmbValue < 0.01 ? '小于0.01元' : `${rmbValue.toFixed(2)}元`;
 }
 
-async function fetchBalance(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<number | undefined> {
+async function fetchUsage(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<number | undefined> {
   const apiKeyResolution = resolveApiKey(cfg);
   if (apiKeyResolution.source === 'missing') {
     logger.warn('balance usage footer skipped: missing EAGLELAB_API_KEY in resolved config and process env');
     return undefined;
   }
   const apiKey = apiKeyResolution.value;
-  logger.info('balance usage footer: starting balance fetch', {
+  logger.info('balance usage footer: starting usage fetch', {
     endpoint: DEFAULT_ENDPOINT,
-    balancePath: DEFAULT_BALANCE_PATH,
+    usagePath: DEFAULT_USAGE_PATH,
     apiKeySource: apiKeyResolution.source,
   });
 
@@ -99,14 +99,14 @@ async function fetchBalance(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<n
     }
 
     const body = (await response.json()) as unknown;
-    const rawBalance = readPath(body, DEFAULT_BALANCE_PATH);
-    const parsedBalance = parseBalance(rawBalance);
-    logger.info('balance usage footer: balance fetched', {
+    const rawUsage = readPath(body, DEFAULT_USAGE_PATH);
+    const parsedUsage = parseUsage(rawUsage);
+    logger.info('balance usage footer: usage fetched', {
       apiKeySource: apiKeyResolution.source,
-      rawBalanceType: typeof rawBalance,
-      parsedBalance,
+      rawUsageType: typeof rawUsage,
+      parsedUsage,
     });
-    return parsedBalance;
+    return parsedUsage;
   } catch (err) {
     logger.warn('balance usage footer fetch failed', { error: String(err) });
     return undefined;
@@ -114,7 +114,7 @@ async function fetchBalance(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<n
 }
 
 export function createBalanceUsageTracker(logger: LarkLogger, cfg?: ClawdbotConfig): BalanceUsageTracker {
-  const beforePromise = fetchBalance(logger, cfg);
+  const beforePromise = fetchUsage(logger, cfg);
   let formattedPromise: Promise<string | undefined> | undefined;
 
   return {
@@ -122,17 +122,17 @@ export function createBalanceUsageTracker(logger: LarkLogger, cfg?: ClawdbotConf
       formattedPromise ??= (async () => {
         const before = await beforePromise;
         if (before == null) {
-          logger.warn('balance usage footer: initial balance unavailable, skipping usage calculation');
+          logger.warn('balance usage footer: initial usage unavailable, skipping usage calculation');
           return undefined;
         }
 
-        const after = await fetchBalance(logger, cfg);
+        const after = await fetchUsage(logger, cfg);
         if (after == null) {
-          logger.warn('balance usage footer: final balance unavailable, skipping usage calculation');
+          logger.warn('balance usage footer: final usage unavailable, skipping usage calculation');
           return undefined;
         }
 
-        const used = before - after;
+        const used = after - before;
         if (!Number.isFinite(used)) {
           logger.warn('balance usage footer: computed usage is not finite', { before, after, used });
           return undefined;
