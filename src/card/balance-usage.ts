@@ -2,7 +2,7 @@ import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 import type { LarkLogger } from '../core/lark-logger';
 import { getResolvedConfig } from '../core/lark-client';
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_ENDPOINT = 'https://live-turing.cn.llm.tcljd.com/api/v1/users/me/budget/usage/summary';
 const DEFAULT_API_KEY_ENV = 'EAGLELAB_API_KEY';
 const DEFAULT_USAGE_PATH = 'data.current_month_usage_in_usd';
@@ -18,7 +18,7 @@ export interface BalanceUsageTracker {
 }
 
 export interface BalanceUsageMetrics {
-  balanceUsageRmb: string;
+  balanceUsageRmb?: string;
   currentMonthUsagePercent?: string;
 }
 
@@ -173,8 +173,28 @@ export function createBalanceUsageTracker(logger: LarkLogger, cfg?: ClawdbotConf
     formattedPromise ??= (async () => {
       const before = await beforePromise;
       if (before == null) {
-        logger.warn('balance usage footer: initial usage unavailable, skipping usage calculation');
-        return undefined;
+        logger.warn('balance usage footer: initial usage unavailable, fetching final usage snapshot only');
+        const afterOnly = await fetchUsage(logger, cfg);
+        if (afterOnly == null) {
+          logger.warn('balance usage footer: final usage unavailable after missing initial snapshot');
+          return undefined;
+        }
+        const currentMonthUsagePercent = formatQuotaUsagePercent(
+          afterOnly.currentMonthUsageUsd,
+          afterOnly.quotaPerMonthUsd,
+          afterOnly.currentMonthRemainingQuotaUsd,
+        );
+        if (!currentMonthUsagePercent) {
+          logger.warn('balance usage footer: month usage percent unavailable after missing initial snapshot', {
+            after: afterOnly,
+          });
+          return undefined;
+        }
+        logger.info('balance usage footer: fallback month usage calculated', {
+          after: afterOnly,
+          currentMonthUsagePercent,
+        });
+        return { currentMonthUsagePercent };
       }
 
       const after = await fetchUsage(logger, cfg);

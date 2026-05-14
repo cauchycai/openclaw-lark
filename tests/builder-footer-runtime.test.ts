@@ -92,6 +92,44 @@ describe('createBalanceUsageTracker', () => {
     await expect(tracker.formatUsageRmb()).resolves.toBe('18.70元');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('falls back to month usage when the initial snapshot is unavailable', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 504,
+        json: async () => ({}),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: {
+            quota_per_month_in_usd: 100,
+            current_month_usage_in_usd: 13,
+            current_month_remaining_quota_in_usd: 87,
+          },
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const tracker = createBalanceUsageTracker(
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as never,
+      {
+        channels: { feishu: {} },
+        models: { providers: { eaglelab: { apiKey: 'sk-test' } } },
+      } as never,
+    );
+
+    await expect(tracker.formatUsage()).resolves.toEqual({
+      currentMonthUsagePercent: '13%',
+    });
+    await expect(tracker.formatUsageRmb()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -176,6 +214,17 @@ describe('formatFooterRuntimeSegments', () => {
     expect(result.primaryEn).toEqual(['Completed', 'Elapsed 1.0s', 'Cost < 0.01 RMB']);
     expect(result.primaryZh.join(' · ')).toContain('<');
     expect(result.primaryEn.join(' · ')).toContain('<');
+  });
+
+  it('renders month usage when per-reply balance usage is unavailable', () => {
+    const result = formatFooterRuntimeSegments({
+      footer: { status: true, elapsed: true, balanceUsage: true },
+      elapsedMs: 1000,
+      metrics: { currentMonthUsagePercent: '13%' },
+    });
+
+    expect(result.primaryZh).toEqual(['已完成', '耗时 1.0s', '本月 13%']);
+    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 1.0s', 'Month 13%']);
   });
 });
 
