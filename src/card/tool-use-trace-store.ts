@@ -86,6 +86,24 @@ export function recordToolUseStart(params: {
   }
 
   const now = Date.now();
+  const sanitizedParams = sanitizeTraceValue(toolParams, 0, { source: 'params' }) as Record<string, unknown> | undefined;
+  const existingIndex = findStartStepIndex(state.steps, toolName, sanitizedParams, toolCallId);
+  if (existingIndex >= 0) {
+    const step = state.steps[existingIndex];
+    if (!step) return;
+    if (toolCallId && !step.toolCallId) {
+      step.toolCallId = toolCallId;
+    }
+    if (runId && !step.runId) {
+      step.runId = runId;
+    }
+    if (!step.params && sanitizedParams) {
+      step.params = sanitizedParams;
+    }
+    state.updatedAt = now;
+    return;
+  }
+
   if (state.steps.length >= MAX_STEPS_PER_SESSION) {
     state.steps.splice(0, state.steps.length - MAX_STEPS_PER_SESSION + 1);
   }
@@ -95,7 +113,7 @@ export function recordToolUseStart(params: {
     toolName,
     toolCallId: toolCallId || undefined,
     runId: runId || undefined,
-    params: sanitizeTraceValue(toolParams, 0, { source: 'params' }) as Record<string, unknown> | undefined,
+    params: sanitizedParams,
     status: 'running',
     startedAt: now,
   });
@@ -211,6 +229,25 @@ function findPendingStepIndex(
     return index;
   }
 
+  return -1;
+}
+
+function findStartStepIndex(
+  steps: ToolUseTraceStep[],
+  toolName: string,
+  params?: Record<string, unknown>,
+  toolCallId?: string,
+): number {
+  const normalizedToolName = normalizeToolName(toolName);
+  const paramsKey = fingerprintTraceValue(params);
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+    if (!step || step.status !== 'running') continue;
+    if (toolCallId && step.toolCallId === toolCallId) return index;
+    if (normalizeToolName(step.toolName) !== normalizedToolName || step.toolCallId) continue;
+    const stepParamsKey = fingerprintTraceValue(step.params);
+    if (stepParamsKey === paramsKey || (toolCallId && !stepParamsKey)) return index;
+  }
   return -1;
 }
 
