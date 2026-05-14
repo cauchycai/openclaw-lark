@@ -256,12 +256,12 @@ export function formatFooterRuntimeSegments(params: {
 
   if (footer?.balanceUsage && metrics?.balanceUsageRmb) {
     const balanceUsageZh = metrics.balanceUsageRmb === '小于0.01元' ? '< 0.01元' : metrics.balanceUsageRmb;
-    primaryZh.push(`消耗 ${balanceUsageZh}`);
+    const monthlyPercentZh = metrics.currentMonthUsagePercent ? `，本月 ${metrics.currentMonthUsagePercent}` : '';
+    primaryZh.push(`消耗 ${balanceUsageZh}${monthlyPercentZh}`);
     const balanceUsageEn =
-      metrics.balanceUsageRmb === '小于0.01元'
-        ? '< 0.01 RMB'
-        : metrics.balanceUsageRmb.replace(/元$/u, ' RMB');
-    primaryEn.push(`Cost ${balanceUsageEn}`);
+      metrics.balanceUsageRmb === '小于0.01元' ? '< 0.01 RMB' : metrics.balanceUsageRmb.replace(/元$/u, ' RMB');
+    const monthlyPercentEn = metrics.currentMonthUsagePercent ? `, month ${metrics.currentMonthUsagePercent}` : '';
+    primaryEn.push(`Cost ${balanceUsageEn}${monthlyPercentEn}`);
   }
 
   if (footer?.model && metrics?.model) {
