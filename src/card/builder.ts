@@ -254,14 +254,19 @@ export function formatFooterRuntimeSegments(params: {
     primaryEn.push(`Elapsed ${d}`);
   }
 
-  if (footer?.balanceUsage && metrics?.balanceUsageRmb) {
-    const balanceUsageZh = metrics.balanceUsageRmb === '小于0.01元' ? '< 0.01元' : metrics.balanceUsageRmb;
-    const monthlyPercentZh = metrics.currentMonthUsagePercent ? `，本月 ${metrics.currentMonthUsagePercent}` : '';
-    primaryZh.push(`消耗 ${balanceUsageZh}${monthlyPercentZh}`);
-    const balanceUsageEn =
-      metrics.balanceUsageRmb === '小于0.01元' ? '< 0.01 RMB' : metrics.balanceUsageRmb.replace(/元$/u, ' RMB');
-    const monthlyPercentEn = metrics.currentMonthUsagePercent ? `, month ${metrics.currentMonthUsagePercent}` : '';
-    primaryEn.push(`Cost ${balanceUsageEn}${monthlyPercentEn}`);
+  if (footer?.balanceUsage && (metrics?.balanceUsageRmb || metrics?.currentMonthUsagePercent)) {
+    if (metrics.balanceUsageRmb) {
+      const balanceUsageZh = metrics.balanceUsageRmb === '小于0.01元' ? '< 0.01元' : metrics.balanceUsageRmb;
+      const monthlyPercentZh = metrics.currentMonthUsagePercent ? `，本月 ${metrics.currentMonthUsagePercent}` : '';
+      primaryZh.push(`消耗 ${balanceUsageZh}${monthlyPercentZh}`);
+      const balanceUsageEn =
+        metrics.balanceUsageRmb === '小于0.01元' ? '< 0.01 RMB' : metrics.balanceUsageRmb.replace(/元$/u, ' RMB');
+      const monthlyPercentEn = metrics.currentMonthUsagePercent ? `, month ${metrics.currentMonthUsagePercent}` : '';
+      primaryEn.push(`Cost ${balanceUsageEn}${monthlyPercentEn}`);
+    } else if (metrics.currentMonthUsagePercent) {
+      primaryZh.push(`本月 ${metrics.currentMonthUsagePercent}`);
+      primaryEn.push(`Month ${metrics.currentMonthUsagePercent}`);
+    }
   }
 
   if (footer?.model && metrics?.model) {
