@@ -32,7 +32,15 @@ vi.mock('../src/core/accounts', () => ({
   getLarkAccount: () => ({ config: {} }),
 }));
 vi.mock('../src/core/footer-config', () => ({
-  resolveFooterConfig: () => null,
+  resolveFooterConfig: () => ({
+    status: false,
+    elapsed: false,
+    tokens: false,
+    cache: false,
+    context: false,
+    model: false,
+    balanceUsage: false,
+  }),
 }));
 vi.mock('../src/core/lark-client', () => ({
   LarkClient: {

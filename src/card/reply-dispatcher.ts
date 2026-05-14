@@ -19,10 +19,12 @@ import { resolveFooterConfig } from '../core/footer-config';
 import { LarkClient } from '../core/lark-client';
 import { larkLogger } from '../core/lark-logger';
 import { sendMediaLark } from '../messaging/outbound/deliver';
-import { sendMarkdownCardFeishu, sendMessageFeishu } from '../messaging/outbound/send';
+import { sendCardFeishu, sendMarkdownCardFeishu, sendMessageFeishu } from '../messaging/outbound/send';
 import { type TypingIndicatorState, addTypingIndicator, removeTypingIndicator } from '../messaging/outbound/typing';
-import { splitReasoningText, stripReasoningTags } from './builder';
+import { createBalanceUsageTracker } from './balance-usage';
+import { buildCardContent, splitReasoningText, stripReasoningTags } from './builder';
 import { isCardTableLimitError } from './card-error';
+import type { FooterSessionMetrics } from './reply-dispatcher-types';
 import type { CreateFeishuReplyDispatcherParams, FeishuReplyDispatcherResult } from './reply-dispatcher-types';
 import { expandAutoMode, resolveReplyMode, shouldUseCard } from './reply-mode';
 import { StreamingCardController } from './streaming-card-controller';
@@ -107,6 +109,57 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   // In streaming mode the controller owns its own guard; in static mode
   // we still need unavailable-message detection for typing and deliver.
   let staticAborted = false;
+  const dispatchStartTime = Date.now();
+  const hasStaticFooter =
+    !controller &&
+    (resolvedFooter.status ||
+      resolvedFooter.elapsed ||
+      resolvedFooter.tokens ||
+      resolvedFooter.cache ||
+      resolvedFooter.context ||
+      resolvedFooter.model ||
+      resolvedFooter.balanceUsage);
+  const staticBalanceUsageTracker =
+    !controller && resolvedFooter.balanceUsage ? createBalanceUsageTracker(log, cfg) : null;
+
+  async function getStaticFooterMetrics(): Promise<FooterSessionMetrics | undefined> {
+    const balanceUsage = await staticBalanceUsageTracker?.formatUsage();
+    if (!balanceUsage) return undefined;
+    return balanceUsage;
+  }
+
+  async function sendStaticMarkdownCard(params: { text: string; includeFooter: boolean }): Promise<void> {
+    const { text, includeFooter } = params;
+    if (!includeFooter || !hasStaticFooter) {
+      await sendMarkdownCardFeishu({
+        cfg,
+        to: chatId,
+        text,
+        replyToMessageId,
+        replyInThread,
+        accountId,
+      });
+      return;
+    }
+
+    const footerMetrics = await getStaticFooterMetrics();
+    const card = buildCardContent('complete', {
+      text,
+      showToolUse: false,
+      elapsedMs: Date.now() - dispatchStartTime,
+      footer: resolvedFooter,
+      footerMetrics,
+    });
+    await sendCardFeishu({
+      cfg,
+      to: chatId,
+      card: card as unknown as Record<string, unknown>,
+      replyToMessageId,
+      replyInThread,
+      accountId,
+    });
+  }
+
   const staticGuard = controller
     ? null
     : new UnavailableGuard({
@@ -262,7 +315,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           });
           // Runtime fallback: shouldUseCard() 通过但 API 仍拒绝（表格数超限）
           let cardTableLimitHit = false;
-          for (const chunk of chunks) {
+          for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
             if (cardTableLimitHit) {
               // 已触发降级，后续 chunk 直接走纯文本
               try {
@@ -282,14 +336,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               continue;
             }
             try {
-              await sendMarkdownCardFeishu({
-                cfg,
-                to: chatId,
-                text: chunk,
-                replyToMessageId,
-                replyInThread,
-                accountId,
-              });
+              await sendStaticMarkdownCard({ text: chunk, includeFooter: i === chunks.length - 1 });
             } catch (err) {
               if (staticGuard?.terminate('deliver.cardChunk', err)) return;
               // 卡片表格数超出飞书限制 — 降级为纯文本
