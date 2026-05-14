@@ -167,6 +167,7 @@ export interface FooterSessionMetrics {
   contextTokens?: number;
   model?: string;
   balanceUsageRmb?: string;
+  currentMonthUsagePercent?: string;
 }
 
 export interface StreamingCardDeps {

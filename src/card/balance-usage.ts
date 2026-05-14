@@ -6,17 +6,29 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_ENDPOINT = 'https://live-turing.cn.llm.tcljd.com/api/v1/users/me/budget/usage/summary';
 const DEFAULT_API_KEY_ENV = 'EAGLELAB_API_KEY';
 const DEFAULT_USAGE_PATH = 'data.current_month_usage_in_usd';
+const DEFAULT_QUOTA_PATH = 'data.quota_per_month_in_usd';
+const DEFAULT_REMAINING_QUOTA_PATH = 'data.current_month_remaining_quota_in_usd';
 const DEFAULT_CLIENT = 'tcl-aigc-portal';
 const DEFAULT_ENVIRONMENT = 'live';
 const RMB_PER_USD = 6.8;
 
 export interface BalanceUsageTracker {
+  formatUsage: () => Promise<BalanceUsageMetrics | undefined>;
   formatUsageRmb: () => Promise<string | undefined>;
 }
 
-type ApiKeyResolution =
-  | { source: 'provider' | 'config-env' | 'process-env'; value: string }
-  | { source: 'missing' };
+export interface BalanceUsageMetrics {
+  balanceUsageRmb: string;
+  currentMonthUsagePercent?: string;
+}
+
+interface BalanceUsageSnapshot {
+  currentMonthUsageUsd: number;
+  quotaPerMonthUsd?: number;
+  currentMonthRemainingQuotaUsd?: number;
+}
+
+type ApiKeyResolution = { source: 'provider' | 'config-env' | 'process-env'; value: string } | { source: 'missing' };
 
 function normalizeSecret(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -68,7 +80,32 @@ export function formatRmbUsage(usdValue: number): string {
   return rmbValue < 0.01 ? '小于0.01元' : `${rmbValue.toFixed(2)}元`;
 }
 
-async function fetchUsage(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<number | undefined> {
+export function formatQuotaUsagePercent(
+  usageUsd: number,
+  quotaPerMonthUsd?: number,
+  remainingQuotaUsd?: number,
+): string | undefined {
+  if (!Number.isFinite(usageUsd) || usageUsd < 0) {
+    return undefined;
+  }
+  const totalQuotaUsd =
+    quotaPerMonthUsd != null && Number.isFinite(quotaPerMonthUsd)
+      ? quotaPerMonthUsd
+      : usageUsd + (remainingQuotaUsd ?? NaN);
+  if (totalQuotaUsd <= 0) {
+    return undefined;
+  }
+  const percent = (usageUsd / totalQuotaUsd) * 100;
+  if (!Number.isFinite(percent)) {
+    return undefined;
+  }
+  if (percent > 0 && percent < 1) {
+    return '<1%';
+  }
+  return `${Math.round(percent)}%`;
+}
+
+async function fetchUsage(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<BalanceUsageSnapshot | undefined> {
   const apiKeyResolution = resolveApiKey(cfg);
   if (apiKeyResolution.source === 'missing') {
     logger.warn('balance usage footer skipped: missing EAGLELAB_API_KEY in resolved config and process env');
@@ -101,12 +138,27 @@ async function fetchUsage(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<num
     const body = (await response.json()) as unknown;
     const rawUsage = readPath(body, DEFAULT_USAGE_PATH);
     const parsedUsage = parseUsage(rawUsage);
+    const rawQuota = readPath(body, DEFAULT_QUOTA_PATH);
+    const parsedQuota = parseUsage(rawQuota);
+    const rawRemainingQuota = readPath(body, DEFAULT_REMAINING_QUOTA_PATH);
+    const parsedRemainingQuota = parseUsage(rawRemainingQuota);
     logger.info('balance usage footer: usage fetched', {
       apiKeySource: apiKeyResolution.source,
       rawUsageType: typeof rawUsage,
       parsedUsage,
+      rawQuotaType: typeof rawQuota,
+      parsedQuota,
+      rawRemainingQuotaType: typeof rawRemainingQuota,
+      parsedRemainingQuota,
     });
-    return parsedUsage;
+    if (parsedUsage == null) {
+      return undefined;
+    }
+    return {
+      currentMonthUsageUsd: parsedUsage,
+      quotaPerMonthUsd: parsedQuota,
+      currentMonthRemainingQuotaUsd: parsedRemainingQuota,
+    };
   } catch (err) {
     logger.warn('balance usage footer fetch failed', { error: String(err) });
     return undefined;
@@ -115,41 +167,55 @@ async function fetchUsage(logger: LarkLogger, cfg?: ClawdbotConfig): Promise<num
 
 export function createBalanceUsageTracker(logger: LarkLogger, cfg?: ClawdbotConfig): BalanceUsageTracker {
   const beforePromise = fetchUsage(logger, cfg);
-  let formattedPromise: Promise<string | undefined> | undefined;
+  let formattedPromise: Promise<BalanceUsageMetrics | undefined> | undefined;
+
+  const formatUsage = () => {
+    formattedPromise ??= (async () => {
+      const before = await beforePromise;
+      if (before == null) {
+        logger.warn('balance usage footer: initial usage unavailable, skipping usage calculation');
+        return undefined;
+      }
+
+      const after = await fetchUsage(logger, cfg);
+      if (after == null) {
+        logger.warn('balance usage footer: final usage unavailable, skipping usage calculation');
+        return undefined;
+      }
+
+      const used = after.currentMonthUsageUsd - before.currentMonthUsageUsd;
+      if (!Number.isFinite(used)) {
+        logger.warn('balance usage footer: computed usage is not finite', { before, after, used });
+        return undefined;
+      }
+
+      const clampedUsed = Math.max(used, 0);
+      const balanceUsageRmb = formatRmbUsage(clampedUsed);
+      const currentMonthUsagePercent = formatQuotaUsagePercent(
+        after.currentMonthUsageUsd,
+        after.quotaPerMonthUsd,
+        after.currentMonthRemainingQuotaUsd,
+      );
+      logger.info('balance usage footer: usage calculated', {
+        before,
+        after,
+        used,
+        clampedUsed,
+        balanceUsageRmb,
+        currentMonthUsagePercent: currentMonthUsagePercent ?? null,
+      });
+      return {
+        balanceUsageRmb,
+        currentMonthUsagePercent,
+      };
+    })();
+    return formattedPromise;
+  };
 
   return {
-    formatUsageRmb() {
-      formattedPromise ??= (async () => {
-        const before = await beforePromise;
-        if (before == null) {
-          logger.warn('balance usage footer: initial usage unavailable, skipping usage calculation');
-          return undefined;
-        }
-
-        const after = await fetchUsage(logger, cfg);
-        if (after == null) {
-          logger.warn('balance usage footer: final usage unavailable, skipping usage calculation');
-          return undefined;
-        }
-
-        const used = after - before;
-        if (!Number.isFinite(used)) {
-          logger.warn('balance usage footer: computed usage is not finite', { before, after, used });
-          return undefined;
-        }
-
-        const clampedUsed = Math.max(used, 0);
-        const formatted = formatRmbUsage(clampedUsed);
-        logger.info('balance usage footer: usage calculated', {
-          before,
-          after,
-          used,
-          clampedUsed,
-          formatted,
-        });
-        return formatted;
-      })();
-      return formattedPromise;
+    formatUsage,
+    async formatUsageRmb() {
+      return (await formatUsage())?.balanceUsageRmb;
     },
   };
 }

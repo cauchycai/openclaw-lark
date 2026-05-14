@@ -3,7 +3,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBalanceUsageTracker, formatRmbUsage } from '../src/card/balance-usage';
+import { createBalanceUsageTracker, formatQuotaUsagePercent, formatRmbUsage } from '../src/card/balance-usage';
 import { buildCardContent, compactNumber, formatFooterRuntimeSegments } from '../src/card/builder';
 import type { ToolUseDisplayStep } from '../src/card/tool-use-display';
 
@@ -39,17 +39,38 @@ describe('formatRmbUsage', () => {
   });
 });
 
+describe('formatQuotaUsagePercent', () => {
+  it('formats current month quota usage from usage and remaining quota', () => {
+    expect(formatQuotaUsagePercent(60.451877425745465, 500, 439.54812257425453)).toBe('12%');
+    expect(formatQuotaUsagePercent(13, undefined, 87)).toBe('13%');
+    expect(formatQuotaUsagePercent(0.5, 100)).toBe('<1%');
+    expect(formatQuotaUsagePercent(10, undefined, undefined)).toBeUndefined();
+  });
+});
+
 describe('createBalanceUsageTracker', () => {
-  it('calculates usage from cumulative current_month_usage_in_usd deltas', async () => {
+  it('calculates task usage from deltas and keeps current month quota percent', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ data: { current_month_usage_in_usd: 10.25, current_month_remaining_quota_in_usd: null } }),
+        json: async () => ({
+          data: {
+            quota_per_month_in_usd: 100,
+            current_month_usage_in_usd: 10.25,
+            current_month_remaining_quota_in_usd: 89.75,
+          },
+        }),
       })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ data: { current_month_usage_in_usd: 13, current_month_remaining_quota_in_usd: null } }),
+        json: async () => ({
+          data: {
+            quota_per_month_in_usd: 100,
+            current_month_usage_in_usd: 13,
+            current_month_remaining_quota_in_usd: 87,
+          },
+        }),
       });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -64,6 +85,10 @@ describe('createBalanceUsageTracker', () => {
       } as never,
     );
 
+    await expect(tracker.formatUsage()).resolves.toEqual({
+      balanceUsageRmb: '18.70元',
+      currentMonthUsagePercent: '13%',
+    });
     await expect(tracker.formatUsageRmb()).resolves.toBe('18.70元');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -96,12 +121,13 @@ describe('formatFooterRuntimeSegments', () => {
         contextTokens: 128000,
         model: 'claude-opus-4-6',
         balanceUsageRmb: '18.70元',
+        currentMonthUsagePercent: '13%',
       },
     });
 
     // Primary line: status, elapsed, balance usage, model
-    expect(result.primaryZh).toEqual(['已完成', '耗时 12.3s', '消耗 18.70元', 'claude-opus-4-6']);
-    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 12.3s', 'Cost 18.70 RMB', 'claude-opus-4-6']);
+    expect(result.primaryZh).toEqual(['已完成', '耗时 12.3s', '消耗 18.70元，本月 13%', 'claude-opus-4-6']);
+    expect(result.primaryEn).toEqual(['Completed', 'Elapsed 12.3s', 'Cost 18.70 RMB, month 13%', 'claude-opus-4-6']);
 
     // Detail line: tokens, cache, context
     expect(result.detailZh).toEqual(['↑ 1.2k ↓ 3.5k', '缓存 800/200 (36%)', '上下文 4.5k/128k (4%)']);

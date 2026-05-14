@@ -144,21 +144,22 @@ export class StreamingCardController {
 
   private async getFooterMetrics(): Promise<FooterSessionMetrics | undefined> {
     const metrics = this.needsSessionFooterMetrics() ? await this.getFooterSessionMetrics() : undefined;
-    const balanceUsageRmb = await this.balanceUsageTracker?.formatUsageRmb();
+    const balanceUsage = await this.balanceUsageTracker?.formatUsage();
     log.info('footer metrics assembled', {
       sessionKey: this.deps.sessionKey,
       footer: this.deps.resolvedFooter,
       hasSessionMetrics: !!metrics,
       sessionMetrics: metrics ?? null,
       balanceUsageEnabled: this.deps.resolvedFooter.balanceUsage,
-      balanceUsageRmb: balanceUsageRmb ?? null,
+      balanceUsageRmb: balanceUsage?.balanceUsageRmb ?? null,
+      currentMonthUsagePercent: balanceUsage?.currentMonthUsagePercent ?? null,
     });
-    if (!balanceUsageRmb) {
+    if (!balanceUsage) {
       return metrics;
     }
     return {
       ...(metrics ?? {}),
-      balanceUsageRmb,
+      ...balanceUsage,
     };
   }
 
