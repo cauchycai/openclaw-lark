@@ -678,7 +678,7 @@ function buildQuestionFormElements(q: QuestionItem, questionIndex: number): Reco
  * Build the full interactive ask-user card.
  *
  * All elements are wrapped in a single `form` container.
- * Submit button uses `form_action_type: "submit"` to collect all values.
+ * Submit button uses `action_type: "form_submit"` to collect all values.
  */
 function buildAskUserCard(questions: QuestionItem[], questionId: string): Record<string, unknown> {
   const formElements: Record<string, unknown>[] = [];
@@ -709,7 +709,7 @@ function buildAskUserCard(questions: QuestionItem[], questionId: string): Record
       i18n_content: { zh_cn: '📮 提交', en_us: '📮 Submit' },
     },
     type: 'primary',
-    form_action_type: 'submit',
+    action_type: 'form_submit',
   });
 
   return {
