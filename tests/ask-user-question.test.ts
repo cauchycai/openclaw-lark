@@ -132,10 +132,28 @@ describe('AskUserQuestion card callback', () => {
   });
 
   afterEach(() => {
+    vi.runOnlyPendingTimers();
     vi.useRealTimers();
   });
 
   describe('handleAskUserAction immediate feedback', () => {
+    it('sends a form submit button using the documented card action field', async () => {
+      const questionId = await seedPendingQuestion();
+      expect(questionId).toBeTruthy();
+
+      const card = mockCreateCardEntity.mock.calls[0]?.[0]?.card;
+      const form = card?.body?.elements?.find((el: any) => el?.tag === 'form');
+      const submitButton = form?.elements?.find((el: any) => el?.tag === 'button');
+
+      expect(submitButton).toMatchObject({
+        tag: 'button',
+        name: `ask_user_submit_${questionId}`,
+        value: { action: 'ask_user_submit', operation_id: questionId },
+        action_type: 'form_submit',
+      });
+      expect(submitButton).not.toHaveProperty('form_action_type');
+    });
+
     it('returns { toast, card } with processing state on successful submit', async () => {
       const questionId = await seedPendingQuestion();
 
