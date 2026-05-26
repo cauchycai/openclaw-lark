@@ -12,7 +12,7 @@
  * Used by both websocket inbound messages and synthetic message paths.
  */
 
-type QueueStatus = 'queued' | 'immediate';
+export type QueueStatus = 'queued' | 'immediate' | 'bypass-active';
 
 export interface ActiveDispatcherEntry {
   abortCard: () => Promise<void>;
@@ -56,9 +56,22 @@ export function enqueueFeishuChatTask(params: {
   chatId: string;
   threadId?: string;
   task: () => Promise<void>;
+  /**
+   * When a serial task is already in-flight for this chat key, run the task
+   * immediately instead of chaining behind the prior dispatch. This lets
+   * follow-up messages reach the gateway while the previous agent run is
+   * still active (steer / collect / followup queue modes).
+   */
+  bypassSerialWhenActive?: boolean;
 }): { status: QueueStatus; promise: Promise<void> } {
-  const { accountId, chatId, threadId, task } = params;
+  const { accountId, chatId, threadId, task, bypassSerialWhenActive } = params;
   const key = buildQueueKey(accountId, chatId, threadId);
+
+  if (bypassSerialWhenActive && chatQueues.has(key)) {
+    const promise = Promise.resolve().then(task, task);
+    return { status: 'bypass-active', promise };
+  }
+
   const prev = chatQueues.get(key) ?? Promise.resolve();
   const status: QueueStatus = chatQueues.has(key) ? 'queued' : 'immediate';
 
