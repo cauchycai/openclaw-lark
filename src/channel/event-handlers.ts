@@ -133,6 +133,7 @@ export async function handleMessageEvent(ctx: MonitorContext, data: unknown): Pr
       accountId,
       chatId,
       threadId,
+      bypassSerialWhenActive: true,
       task: async () => {
         try {
           await withTicket(
