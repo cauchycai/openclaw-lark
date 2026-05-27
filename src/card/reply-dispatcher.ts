@@ -282,7 +282,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
       // ---- Streaming card mode ----
       if (controller) {
-        if (meta?.kind === 'tool' && shouldRouteToolPayloadToCard(payload, toolUseDisplay.showToolUse)) {
+        if (meta?.kind === 'tool' && shouldRouteToolPayloadToCard(payload)) {
           await controller.onToolPayload(payload);
           return;
         }
@@ -504,8 +504,7 @@ function getVisiblePayloadText(payload: ReplyPayload): string {
   return stripReasoningTags(rawText);
 }
 
-function shouldRouteToolPayloadToCard(payload: ReplyPayload, showToolUse: boolean): boolean {
-  if (!showToolUse) return false;
+function shouldRouteToolPayloadToCard(payload: ReplyPayload): boolean {
   if (!getVisiblePayloadText(payload).trim()) return false;
   if (payload.interactive) return false;
   if (payload.btw) return false;
