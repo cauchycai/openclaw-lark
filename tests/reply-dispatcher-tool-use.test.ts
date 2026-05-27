@@ -8,6 +8,7 @@ const controllerSpies = {
   ensureCardCreated: vi.fn().mockResolvedValue(undefined),
   onDeliver: vi.fn().mockResolvedValue(undefined),
   onReasoningStream: vi.fn().mockResolvedValue(undefined),
+  onToolStart: vi.fn().mockResolvedValue(undefined),
   onToolPayload: vi.fn().mockResolvedValue(undefined),
   onItemEvent: vi.fn().mockResolvedValue(undefined),
   onCommandOutput: vi.fn().mockResolvedValue(undefined),
@@ -112,6 +113,7 @@ vi.mock('../src/card/streaming-card-controller', () => ({
     ensureCardCreated = controllerSpies.ensureCardCreated;
     onDeliver = controllerSpies.onDeliver;
     onReasoningStream = controllerSpies.onReasoningStream;
+    onToolStart = controllerSpies.onToolStart;
     onToolPayload = controllerSpies.onToolPayload;
     onItemEvent = controllerSpies.onItemEvent;
     onCommandOutput = controllerSpies.onCommandOutput;
@@ -186,6 +188,31 @@ describe('reply-dispatcher tool_use mode', () => {
       toolUseDisplay: {
         mode: 'on',
         showToolUse: true,
+        showToolResultDetails: false,
+        showFullPaths: false,
+      },
+    });
+
+    result.dispatcher.sendToolResult({ text: 'Read main.ts' });
+    await Promise.resolve();
+
+    expect(controllerSpies.onToolPayload).toHaveBeenCalledWith({ text: 'Read main.ts' });
+    expect(controllerSpies.onDeliver).not.toHaveBeenCalled();
+  });
+
+  it('routes tool payloads to the early card path even when verbose is off', async () => {
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: 'main',
+      sessionKey: 'agent:main:feishu:dm:user-1',
+      chatId: 'chat-1',
+      accountId: 'default',
+      chatType: 'p2p',
+      replyInThread: false,
+      skipTyping: true,
+      toolUseDisplay: {
+        mode: 'off',
+        showToolUse: false,
         showToolResultDetails: false,
         showFullPaths: false,
       },
@@ -294,6 +321,45 @@ describe('reply-dispatcher tool_use mode', () => {
       toolCallId: 'tool-1',
       title: 'npm test',
       phase: 'end',
+    });
+  });
+
+  it('forwards structured tool progress callbacks when verbose is off', async () => {
+    const result = createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: 'main',
+      sessionKey: 'agent:main:feishu:dm:user-1',
+      chatId: 'chat-1',
+      accountId: 'default',
+      chatType: 'p2p',
+      replyInThread: false,
+      skipTyping: true,
+      toolUseDisplay: {
+        mode: 'off',
+        showToolUse: false,
+        showToolResultDetails: false,
+        showFullPaths: false,
+      },
+    });
+
+    await (result.replyOptions.onToolStart as (payload: { name: string; phase: string }) => Promise<void>)({
+      name: 'feishu_bitable_app_table_record.list',
+      phase: 'start',
+    });
+    await (result.replyOptions.onItemEvent as (payload: { itemId: string; name: string; phase: string }) => Promise<void>)({
+      itemId: 'item-1',
+      name: 'read',
+      phase: 'start',
+    });
+
+    expect(controllerSpies.onToolStart).toHaveBeenCalledWith({
+      name: 'feishu_bitable_app_table_record.list',
+      phase: 'start',
+    });
+    expect(controllerSpies.onItemEvent).toHaveBeenCalledWith({
+      itemId: 'item-1',
+      name: 'read',
+      phase: 'start',
     });
   });
 
