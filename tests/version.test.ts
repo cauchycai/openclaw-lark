@@ -5,10 +5,10 @@ import { getPluginVersion, getPluginVersionDisplay, getUserAgent } from '../src/
 describe('version metadata', () => {
   it('keeps the upstream package version and shows fork metadata separately', () => {
     expect(getPluginVersion()).toBe('2026.6.2');
-    expect(getPluginVersionDisplay()).toBe('upstream 2026.6.2 / fork turingclaw 2026.6.2.1');
+    expect(getPluginVersionDisplay()).toBe('upstream 2026.6.2 / fork turingclaw 2026.6.2.2');
   });
 
   it('includes fork metadata in the User-Agent without spaces', () => {
-    expect(getUserAgent()).toMatch(/^openclaw-lark\/2026\.6\.2\+turingclaw-2026\.6\.2\.1\/(?:mac|linux|windows)$/u);
+    expect(getUserAgent()).toMatch(/^openclaw-lark\/2026\.6\.2\+turingclaw-2026\.6\.2\.2\/(?:mac|linux|windows)$/u);
   });
 });
