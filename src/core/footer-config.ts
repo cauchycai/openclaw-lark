@@ -17,8 +17,8 @@ import type { FeishuFooterConfig } from './types';
 /**
  * The default footer configuration.
  *
- * By default all metadata items are hidden except balance usage, which is
- * shown unless explicitly disabled.
+ * By default all metadata items are hidden. Balance usage is only shown when
+ * explicitly enabled in config.
  */
 export const DEFAULT_FOOTER_CONFIG: Required<FeishuFooterConfig> = {
   status: false,
@@ -27,7 +27,7 @@ export const DEFAULT_FOOTER_CONFIG: Required<FeishuFooterConfig> = {
   cache: false,
   context: false,
   model: false,
-  balanceUsage: true,
+  balanceUsage: false,
 };
 
 // ---------------------------------------------------------------------------
