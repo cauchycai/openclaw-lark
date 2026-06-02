@@ -1,6 +1,6 @@
 {
   "name": "@larksuite/openclaw-lark",
-  "version": "2026.5.20",
+  "version": "2026.6.2",
   "openclawFork": {
     "name": "turingclaw",
     "version": "2026.5.22.1"
