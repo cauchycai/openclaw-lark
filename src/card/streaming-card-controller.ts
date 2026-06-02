@@ -570,16 +570,17 @@ export class StreamingCardController {
 
   async onToolStart(payload: { name?: string; phase?: string }): Promise<void> {
     if (!this.shouldProceed('onToolStart')) return;
-    if (!this.shouldDisplayToolUse) return;
     if (payload.phase && payload.phase !== 'start') return;
 
     this.markToolUseActivity();
-    const toolName = normalizeProgressName(payload.name, 'tool');
-    if (toolName) {
-      recordToolUseStart({
-        sessionKey: this.deps.sessionKey,
-        toolName,
-      });
+    if (this.shouldDisplayToolUse) {
+      const toolName = normalizeProgressName(payload.name, 'tool');
+      if (toolName) {
+        recordToolUseStart({
+          sessionKey: this.deps.sessionKey,
+          toolName,
+        });
+      }
     }
 
     await this.updateToolUseCardAfterTrace('onToolStart');
@@ -587,32 +588,33 @@ export class StreamingCardController {
 
   async onItemEvent(payload: ToolItemEventPayload): Promise<void> {
     if (!this.shouldProceed('onItemEvent')) return;
-    if (!this.shouldDisplayToolUse) return;
 
     this.markToolUseActivity();
 
-    const phase = normalizeProgressName(payload.phase, '');
-    const status = normalizeProgressName(payload.status, '');
-    const toolName = resolveProgressToolName(payload, 'item');
-    const toolCallId = payload.itemId || undefined;
-    const toolParams = buildItemEventParams(payload);
+    if (this.shouldDisplayToolUse) {
+      const phase = normalizeProgressName(payload.phase, '');
+      const status = normalizeProgressName(payload.status, '');
+      const toolName = resolveProgressToolName(payload, 'item');
+      const toolCallId = payload.itemId || undefined;
+      const toolParams = buildItemEventParams(payload);
 
-    if (phase === 'end' || phase === 'complete' || phase === 'completed' || isTerminalProgressStatus(status)) {
-      recordToolUseEnd({
-        sessionKey: this.deps.sessionKey,
-        toolName,
-        toolParams,
-        toolCallId,
-        result: payload.summary ?? payload.progressText ?? payload.title,
-        error: isErrorProgressStatus(status) ? (payload.summary ?? payload.progressText ?? status) : undefined,
-      });
-    } else if (phase === 'start' || phase === 'update' || status) {
-      recordToolUseStart({
-        sessionKey: this.deps.sessionKey,
-        toolName,
-        toolParams,
-        toolCallId,
-      });
+      if (phase === 'end' || phase === 'complete' || phase === 'completed' || isTerminalProgressStatus(status)) {
+        recordToolUseEnd({
+          sessionKey: this.deps.sessionKey,
+          toolName,
+          toolParams,
+          toolCallId,
+          result: payload.summary ?? payload.progressText ?? payload.title,
+          error: isErrorProgressStatus(status) ? (payload.summary ?? payload.progressText ?? status) : undefined,
+        });
+      } else if (phase === 'start' || phase === 'update' || status) {
+        recordToolUseStart({
+          sessionKey: this.deps.sessionKey,
+          toolName,
+          toolParams,
+          toolCallId,
+        });
+      }
     }
 
     await this.updateToolUseCardAfterTrace('onItemEvent');
@@ -620,38 +622,39 @@ export class StreamingCardController {
 
   async onCommandOutput(payload: ToolCommandOutputPayload): Promise<void> {
     if (!this.shouldProceed('onCommandOutput')) return;
-    if (!this.shouldDisplayToolUse) return;
 
     this.markToolUseActivity();
 
-    const phase = normalizeProgressName(payload.phase, '');
-    const status = normalizeProgressName(payload.status, '');
-    const toolName = resolveProgressToolName(payload, 'command');
-    const toolCallId = payload.toolCallId || payload.itemId || undefined;
-    const toolParams = buildCommandOutputParams(payload);
-    const failed = isErrorProgressStatus(status) || (typeof payload.exitCode === 'number' && payload.exitCode !== 0);
+    if (this.shouldDisplayToolUse) {
+      const phase = normalizeProgressName(payload.phase, '');
+      const status = normalizeProgressName(payload.status, '');
+      const toolName = resolveProgressToolName(payload, 'command');
+      const toolCallId = payload.toolCallId || payload.itemId || undefined;
+      const toolParams = buildCommandOutputParams(payload);
+      const failed = isErrorProgressStatus(status) || (typeof payload.exitCode === 'number' && payload.exitCode !== 0);
 
-    if (phase === 'end' || phase === 'complete' || phase === 'completed' || isTerminalProgressStatus(status)) {
-      recordToolUseEnd({
-        sessionKey: this.deps.sessionKey,
-        toolName,
-        toolParams,
-        toolCallId,
-        result: {
-          output: payload.output,
-          exitCode: payload.exitCode,
-          status: payload.status,
-        },
-        error: failed ? summarizeCommandFailure(payload) : undefined,
-        durationMs: payload.durationMs,
-      });
-    } else {
-      recordToolUseStart({
-        sessionKey: this.deps.sessionKey,
-        toolName,
-        toolParams,
-        toolCallId,
-      });
+      if (phase === 'end' || phase === 'complete' || phase === 'completed' || isTerminalProgressStatus(status)) {
+        recordToolUseEnd({
+          sessionKey: this.deps.sessionKey,
+          toolName,
+          toolParams,
+          toolCallId,
+          result: {
+            output: payload.output,
+            exitCode: payload.exitCode,
+            status: payload.status,
+          },
+          error: failed ? summarizeCommandFailure(payload) : undefined,
+          durationMs: payload.durationMs,
+        });
+      } else {
+        recordToolUseStart({
+          sessionKey: this.deps.sessionKey,
+          toolName,
+          toolParams,
+          toolCallId,
+        });
+      }
     }
 
     await this.updateToolUseCardAfterTrace('onCommandOutput');
@@ -659,7 +662,6 @@ export class StreamingCardController {
 
   async onToolPayload(_payload: ReplyPayload): Promise<void> {
     if (!this.shouldProceed('onToolPayload')) return;
-    if (!this.shouldDisplayToolUse) return;
 
     this.markToolUseActivity();
 
