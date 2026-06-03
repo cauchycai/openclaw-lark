@@ -844,13 +844,13 @@ export class StreamingCardController {
         });
 
         if (idleEffectiveCardId) {
+          await this.closeCardKitStreamingMode(idleEffectiveCardId, 'onIdle');
           await this.updateFinalCardKitCard({
             cardId: idleEffectiveCardId,
             card: completeCard,
             fallbackText: displayText,
             label: 'onIdle',
           });
-          await this.closeCardKitStreamingMode(idleEffectiveCardId, 'onIdle');
         } else {
           await updateCardFeishu({
             cfg: this.deps.cfg,
@@ -1232,19 +1232,20 @@ export class StreamingCardController {
   }
 
   /**
-   * Update terminal content then close streaming mode.
+   * Close streaming mode before replacing terminal content.
    *
-   * Long replies make the final card update more likely to hit Feishu limits
-   * or stale sequence windows. Keep these operations independent so a failed
-   * full-body replace does not leave the CardKit loader running forever.
+   * Feishu mobile can keep showing the streaming ellipsis if the final body is
+   * replaced while CardKit streaming mode is still enabled. The final update
+   * remains independent and fallback-capable so a failed full-body replace does
+   * not leave the original streaming card unchanged.
    */
   private async closeStreamingAndUpdate(
     cardId: string,
     card: ReturnType<typeof buildCardContent>,
     label: string,
   ): Promise<void> {
-    await this.updateFinalCardKitCard({ cardId, card, fallbackText: '', label });
     await this.closeCardKitStreamingMode(cardId, label);
+    await this.updateFinalCardKitCard({ cardId, card, fallbackText: '', label });
   }
 
   private async updateFinalCardKitCard(params: {

@@ -138,4 +138,30 @@ describe('StreamingCardController final CardKit cleanup', () => {
     expect(mocks.setCardStreamingMode.mock.calls[1][0].sequence).toBe(2);
     expect(mocks.setCardStreamingMode.mock.calls[1][0].streamingMode).toBe(false);
   });
+
+  it('closes streaming mode before replacing final CardKit content', async () => {
+    mocks.updateCardKitCard.mockReset();
+    mocks.setCardStreamingMode.mockReset();
+    mocks.setCardStreamingMode.mockResolvedValueOnce(undefined);
+    mocks.updateCardKitCard.mockResolvedValueOnce(undefined);
+
+    const controller = createController() as unknown as {
+      closeStreamingAndUpdate(cardId: string, card: ReturnType<typeof buildCardContent>, label: string): Promise<void>;
+    };
+
+    await controller.closeStreamingAndUpdate(
+      'card_1',
+      buildCardContent('complete', {
+        text: 'full final answer',
+        showToolUse: true,
+      }),
+      'test',
+    );
+
+    expect(mocks.setCardStreamingMode).toHaveBeenCalledTimes(1);
+    expect(mocks.updateCardKitCard).toHaveBeenCalledTimes(1);
+    expect(mocks.setCardStreamingMode.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.updateCardKitCard.mock.invocationCallOrder[0],
+    );
+  });
 });
