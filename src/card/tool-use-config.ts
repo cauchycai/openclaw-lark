@@ -4,9 +4,9 @@
  *
  * Resolution logic for Feishu tool-use display.
  *
- * The source of truth is OpenClaw's effective verbose state:
+ * The detail source of truth is OpenClaw's effective verbose state:
  * inline `/verbose` override > session store override > config default.
- * Feishu channel config only retains UI-level detail (`showFullPaths`).
+ * Feishu channel config only controls UI-level display preferences.
  */
 
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
@@ -31,9 +31,11 @@ export function resolveToolUseDisplayConfig(params: {
   body?: string;
 }): ToolUseDisplayConfig {
   const mode = resolveEffectiveVerboseMode(params);
+  const showCompactToolUse =
+    mode !== 'off' || params.feishuCfg?.toolUseDisplay?.showWhenVerboseOff !== false;
   return {
     mode,
-    showToolUse: mode !== 'off',
+    showToolUse: showCompactToolUse,
     showToolResultDetails: mode === 'full',
     showFullPaths: params.feishuCfg?.toolUseDisplay?.showFullPaths === true,
   };

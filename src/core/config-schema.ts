@@ -189,6 +189,7 @@ export const FeishuAccountConfigSchema = z.object({
   blockStreaming: z.boolean().optional(),
   toolUseDisplay: z
     .object({
+      showWhenVerboseOff: z.boolean().optional(),
       showFullPaths: z.boolean().optional(),
     })
     .optional(),
