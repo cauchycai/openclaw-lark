@@ -3,7 +3,7 @@
   "version": "2026.6.3",
   "openclawFork": {
     "name": "turingclaw",
-    "version": "2026.6.2.4"
+    "version": "2026.6.3.1"
   },
   "description": "OpenClaw Lark/Feishu channel plugin",
   "type": "module",
