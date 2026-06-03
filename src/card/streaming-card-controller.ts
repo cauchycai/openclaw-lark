@@ -67,6 +67,8 @@ import {
 import { UnavailableGuard } from './unavailable-guard';
 
 const log = larkLogger('card/streaming');
+const FINAL_CARDKIT_RETRY_COUNT = 3;
+const FINAL_FALLBACK_TEXT_LIMIT = 12_000;
 
 interface TerminalCardTextImageResolver {
   resolveImages(text: string): string;
@@ -807,22 +809,6 @@ export class StreamingCardController {
     const idleEffectiveCardId = this.cardKit.cardKitCardId ?? this.cardKit.originalCardKitCardId;
     try {
       if (this.cardKit.cardMessageId) {
-        if (idleEffectiveCardId) {
-          const seqBeforeClose = this.cardKit.cardKitSequence;
-          this.cardKit.cardKitSequence += 1;
-          log.info('onIdle: closing streaming mode', {
-            seqBefore: seqBeforeClose,
-            seqAfter: this.cardKit.cardKitSequence,
-          });
-          await setCardStreamingMode({
-            cfg: this.deps.cfg,
-            cardId: idleEffectiveCardId,
-            streamingMode: false,
-            sequence: this.cardKit.cardKitSequence,
-            accountId: this.deps.accountId,
-          });
-        }
-
         const isNoReplyLeak =
           !this.text.completedText && SILENT_REPLY_TOKEN.startsWith(this.text.accumulatedText.trim());
         const displayText =
@@ -858,19 +844,13 @@ export class StreamingCardController {
         });
 
         if (idleEffectiveCardId) {
-          const seqBeforeUpdate = this.cardKit.cardKitSequence;
-          this.cardKit.cardKitSequence += 1;
-          log.info('onIdle: updating final card', {
-            seqBefore: seqBeforeUpdate,
-            seqAfter: this.cardKit.cardKitSequence,
-          });
-          await updateCardKitCard({
-            cfg: this.deps.cfg,
+          await this.updateFinalCardKitCard({
             cardId: idleEffectiveCardId,
-            card: toCardKit2(completeCard),
-            sequence: this.cardKit.cardKitSequence,
-            accountId: this.deps.accountId,
+            card: completeCard,
+            fallbackText: displayText,
+            label: 'onIdle',
           });
+          await this.closeCardKitStreamingMode(idleEffectiveCardId, 'onIdle');
         } else {
           await updateCardFeishu({
             cfg: this.deps.cfg,
@@ -1252,40 +1232,116 @@ export class StreamingCardController {
   }
 
   /**
-   * Close streaming mode then update card content (shared by onError and abortCard).
+   * Update terminal content then close streaming mode.
+   *
+   * Long replies make the final card update more likely to hit Feishu limits
+   * or stale sequence windows. Keep these operations independent so a failed
+   * full-body replace does not leave the CardKit loader running forever.
    */
   private async closeStreamingAndUpdate(
     cardId: string,
     card: ReturnType<typeof buildCardContent>,
     label: string,
   ): Promise<void> {
-    const seqBeforeClose = this.cardKit.cardKitSequence;
-    this.cardKit.cardKitSequence += 1;
-    log.info(`${label}: closing streaming mode`, {
-      seqBefore: seqBeforeClose,
-      seqAfter: this.cardKit.cardKitSequence,
-    });
-    await setCardStreamingMode({
-      cfg: this.deps.cfg,
-      cardId,
-      streamingMode: false,
-      sequence: this.cardKit.cardKitSequence,
-      accountId: this.deps.accountId,
-    });
-    const seqBeforeUpdate = this.cardKit.cardKitSequence;
-    this.cardKit.cardKitSequence += 1;
-    log.info(`${label}: updating card`, {
-      seqBefore: seqBeforeUpdate,
-      seqAfter: this.cardKit.cardKitSequence,
-    });
-    await updateCardKitCard({
-      cfg: this.deps.cfg,
-      cardId,
-      card: toCardKit2(card),
-      sequence: this.cardKit.cardKitSequence,
-      accountId: this.deps.accountId,
-    });
+    await this.updateFinalCardKitCard({ cardId, card, fallbackText: '', label });
+    await this.closeCardKitStreamingMode(cardId, label);
   }
+
+  private async updateFinalCardKitCard(params: {
+    cardId: string;
+    card: ReturnType<typeof buildCardContent>;
+    fallbackText: string;
+    label: string;
+  }): Promise<void> {
+    const { cardId, card, fallbackText, label } = params;
+    try {
+      await this.updateCardKitCardWithRetry(cardId, toCardKit2(card), `${label}: updating final card`);
+      return;
+    } catch (err) {
+      log.warn(`${label}: final card update failed, trying compact fallback`, { error: String(err) });
+    }
+
+    const fallbackCard = buildCardContent('complete', {
+      text: buildFinalFallbackText(fallbackText),
+      showToolUse: false,
+      elapsedMs: this.elapsed(),
+      footer: this.deps.resolvedFooter,
+    });
+    try {
+      await this.updateCardKitCardWithRetry(cardId, toCardKit2(fallbackCard), `${label}: updating fallback card`);
+    } catch (err) {
+      log.warn(`${label}: fallback final card update failed`, { error: String(err) });
+    }
+  }
+
+  private async updateCardKitCardWithRetry(
+    cardId: string,
+    card: Record<string, unknown>,
+    label: string,
+  ): Promise<void> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= FINAL_CARDKIT_RETRY_COUNT; attempt += 1) {
+      const seqBefore = this.cardKit.cardKitSequence;
+      this.cardKit.cardKitSequence += 1;
+      log.info(label, {
+        attempt,
+        seqBefore,
+        seqAfter: this.cardKit.cardKitSequence,
+      });
+      try {
+        await updateCardKitCard({
+          cfg: this.deps.cfg,
+          cardId,
+          card,
+          sequence: this.cardKit.cardKitSequence,
+          accountId: this.deps.accountId,
+        });
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (this.guard.terminate(label, err)) return;
+        log.warn(`${label} failed`, { attempt, error: String(err) });
+      }
+    }
+    throw lastErr;
+  }
+
+  private async closeCardKitStreamingMode(cardId: string, label: string): Promise<void> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= FINAL_CARDKIT_RETRY_COUNT; attempt += 1) {
+      const seqBefore = this.cardKit.cardKitSequence;
+      this.cardKit.cardKitSequence += 1;
+      log.info(`${label}: closing streaming mode`, {
+        attempt,
+        seqBefore,
+        seqAfter: this.cardKit.cardKitSequence,
+      });
+      try {
+        await setCardStreamingMode({
+          cfg: this.deps.cfg,
+          cardId,
+          streamingMode: false,
+          sequence: this.cardKit.cardKitSequence,
+          accountId: this.deps.accountId,
+        });
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (this.guard.terminate(`${label}: closing streaming mode`, err)) return;
+        log.warn(`${label}: closing streaming mode failed`, { attempt, error: String(err) });
+      }
+    }
+    throw lastErr;
+  }
+}
+
+function buildFinalFallbackText(text: string): string {
+  const trimmed = text.trim();
+  const suffix =
+    '\n\n---\nFinal Feishu card rendering hit a platform limit, so this compact completed card was used.';
+  if (!trimmed) return `Response completed.${suffix}`;
+  if (trimmed.length <= FINAL_FALLBACK_TEXT_LIMIT) return trimmed + suffix;
+  return `${trimmed.slice(0, FINAL_FALLBACK_TEXT_LIMIT).trimEnd()}\n\n...(truncated)${suffix}`;
 }
 
 // ---------------------------------------------------------------------------
