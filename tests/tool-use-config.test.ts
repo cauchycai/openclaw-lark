@@ -86,8 +86,8 @@ describe('resolveToolUseDisplayConfig', () => {
     expect(config.showToolResultDetails).toBe(false);
   });
 
-  it('defaults to off when no inline, session, or config value is present', () => {
-    const storePath = createStorePath('hard-off');
+  it('shows compact tool use by default even when verbose is off', () => {
+    const storePath = createStorePath('default-compact-display');
 
     const config = resolveToolUseDisplayConfig({
       cfg: { session: { store: storePath } } as never,
@@ -98,7 +98,27 @@ describe('resolveToolUseDisplayConfig', () => {
     });
 
     expect(config.mode).toBe('off');
+    expect(config.showToolUse).toBe(true);
+    expect(config.showToolResultDetails).toBe(false);
+  });
+
+  it('can explicitly hide compact tool use when verbose is off', () => {
+    const storePath = createStorePath('compact-display-verbose-off');
+
+    const config = resolveToolUseDisplayConfig({
+      cfg: {
+        session: { store: storePath },
+        agents: { defaults: { verboseDefault: 'off' } },
+      } as never,
+      feishuCfg: { toolUseDisplay: { showWhenVerboseOff: false } } as never,
+      agentId: 'main',
+      sessionKey: 'agent:main:feishu:dm:user-1',
+      body: 'run tests',
+    });
+
+    expect(config.mode).toBe('off');
     expect(config.showToolUse).toBe(false);
+    expect(config.showToolResultDetails).toBe(false);
   });
 
   it('falls back to the default-agent session key for non-default agents', () => {
