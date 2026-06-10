@@ -26,6 +26,7 @@ import { withTicket } from '../core/lark-ticket';
 import { larkLogger } from '../core/lark-logger';
 import { handleCardAction } from '../tools/auto-auth';
 import { handleAskUserAction } from '../tools/ask-user-question';
+import { handleMenuPickModelEvent as dispatchMenuPickModelEvent, handleModelPickerAction } from '../tools/model-picker';
 import { buildQueueKey, enqueueFeishuChatTask, getActiveDispatcher, hasActiveTask } from './chat-queue';
 import { extractRawTextFromEvent, isLikelyAbortText } from './abort-detect';
 import type { MonitorContext } from './types';
@@ -402,6 +403,19 @@ export async function handleCommentEvent(ctx: MonitorContext, data: unknown): Pr
 }
 
 // ---------------------------------------------------------------------------
+// Bot menu handler
+// ---------------------------------------------------------------------------
+
+export async function handleMenuPickModelEvent(ctx: MonitorContext, data: unknown): Promise<void> {
+  if (!isEventOwnershipValid(ctx, data)) return;
+  try {
+    await dispatchMenuPickModelEvent(ctx, data);
+  } catch (err) {
+    elog.warn(`application.bot.menu_v6 handler error: ${err}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Card action handler
 // ---------------------------------------------------------------------------
 
@@ -410,6 +424,9 @@ export async function handleCardActionEvent(ctx: MonitorContext, data: unknown):
     // AskUserQuestion：表单卡片交互（宿主内建能力优先）
     const askResult = handleAskUserAction(data, ctx.cfg, ctx.accountId);
     if (askResult !== undefined) return askResult;
+
+    const modelResult = handleModelPickerAction(data, ctx.cfg, ctx.accountId);
+    if (modelResult !== undefined) return modelResult;
 
     // auto-auth：授权/权限引导相关卡片交互（宿主内建能力优先）
     const authResult = await handleCardAction(data, ctx.cfg, ctx.accountId);
