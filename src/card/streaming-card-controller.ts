@@ -147,6 +147,7 @@ export class StreamingCardController {
   private createEpoch = 0;
   private _terminalReason: TerminalReason | null = null;
   private dispatchFullyComplete = false;
+  private finalizationPromise: Promise<void> | null = null;
   private cardCreationPromise: Promise<void> | null = null;
   private disposeShutdownHook: (() => void) | null = null;
   private readonly dispatchStartTime = Date.now();
@@ -795,8 +796,17 @@ export class StreamingCardController {
     if (!this.dispatchFullyComplete) return;
 
     if (this.isTerminalPhase) return;
+    if (this.finalizationPromise) {
+      await this.finalizationPromise;
+      return;
+    }
+
+    await this.startCompletionFinalization('onIdle');
+  }
+
+  private async finalizeCompleteCard(source: string): Promise<void> {
     this.captureToolUseElapsed();
-    this.finalizeCard('onIdle', 'normal');
+    this.finalizeCard(source, 'normal');
 
     await this.flush.waitForFlush();
 
@@ -820,7 +830,7 @@ export class StreamingCardController {
         // 等待图片异步解析（最多 15s），避免终态卡片留占位符
         const resolvedDisplayText = await this.imageResolver.resolveImagesAwait(displayText, 15_000);
 
-        const idleToolUseDisplay = this.computeToolUseDisplay();
+        const idleToolUseDisplay = markRunningToolStepsComplete(this.computeToolUseDisplay());
         const terminalContent = prepareTerminalCardContent(
           {
             text: resolvedDisplayText,
@@ -849,7 +859,7 @@ export class StreamingCardController {
             cardId: idleEffectiveCardId,
             card: completeCard,
             fallbackText: displayText,
-            label: 'onIdle',
+            label: source,
           });
         } else {
           await updateCardFeishu({
@@ -862,6 +872,7 @@ export class StreamingCardController {
         log.info('reply completed, card finalized', {
           elapsedMs: this.elapsed(),
           isCardKit: !!idleEffectiveCardId,
+          source,
         });
       }
     } catch (err) {
@@ -881,6 +892,28 @@ export class StreamingCardController {
       accumulatedTextLen: this.text.accumulatedText.length,
     });
     this.dispatchFullyComplete = true;
+    if (!this.isTerminalPhase && !this.finalizationPromise) {
+      void this.startCompletionFinalization('markFullyComplete');
+    }
+  }
+
+  private async startCompletionFinalization(source: string): Promise<void> {
+    if (this.finalizationPromise) {
+      await this.finalizationPromise;
+      return;
+    }
+
+    const promise = this.finalizeCompleteCard(source).catch((err: unknown) => {
+      log.warn('completion finalization failed', { source, error: String(err) });
+    });
+    this.finalizationPromise = promise;
+    try {
+      await promise;
+    } finally {
+      if (this.finalizationPromise === promise) {
+        this.finalizationPromise = null;
+      }
+    }
   }
 
   async abortCard(): Promise<void> {
@@ -1343,6 +1376,14 @@ function buildFinalFallbackText(text: string): string {
   if (!trimmed) return `Response completed.${suffix}`;
   if (trimmed.length <= FINAL_FALLBACK_TEXT_LIMIT) return trimmed + suffix;
   return `${trimmed.slice(0, FINAL_FALLBACK_TEXT_LIMIT).trimEnd()}\n\n...(truncated)${suffix}`;
+}
+
+function markRunningToolStepsComplete(display: ToolUseDisplayResult | null): ToolUseDisplayResult | null {
+  if (!display) return null;
+  return {
+    ...display,
+    steps: display.steps.map((step) => (step.status === 'running' ? { ...step, status: 'success' } : step)),
+  };
 }
 
 // ---------------------------------------------------------------------------

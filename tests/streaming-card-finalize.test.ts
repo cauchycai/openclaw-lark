@@ -62,6 +62,7 @@ vi.mock('../src/card/unavailable-guard', () => ({
 
 import { buildCardContent } from '../src/card/builder';
 import { StreamingCardController } from '../src/card/streaming-card-controller';
+import { clearToolUseTraceRun, recordToolUseStart, startToolUseTraceRun } from '../src/card/tool-use-trace-store';
 
 function createController(): StreamingCardController {
   return new StreamingCardController({
@@ -163,5 +164,74 @@ describe('StreamingCardController final CardKit cleanup', () => {
     expect(mocks.setCardStreamingMode.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.updateCardKitCard.mock.invocationCallOrder[0],
     );
+  });
+
+  it('markFullyComplete actively finalizes the card', async () => {
+    mocks.updateCardKitCard.mockReset();
+    mocks.setCardStreamingMode.mockReset();
+    mocks.setCardStreamingMode.mockResolvedValueOnce(undefined);
+    mocks.updateCardKitCard.mockResolvedValueOnce(undefined);
+
+    const controller = createController() as unknown as {
+      cardKit: {
+        cardKitCardId: string | null;
+        originalCardKitCardId: string | null;
+        cardKitSequence: number;
+        cardMessageId: string | null;
+      };
+      text: { accumulatedText: string };
+      finalizationPromise: Promise<void> | null;
+      markFullyComplete(): void;
+    };
+    controller.cardKit.cardKitCardId = 'card_1';
+    controller.cardKit.originalCardKitCardId = 'card_1';
+    controller.cardKit.cardMessageId = 'om_1';
+    controller.text.accumulatedText = 'final answer';
+
+    controller.markFullyComplete();
+    await controller.finalizationPromise;
+
+    expect(mocks.setCardStreamingMode).toHaveBeenCalledTimes(1);
+    expect(mocks.updateCardKitCard).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(mocks.updateCardKitCard.mock.calls[0][0].card)).not.toContain('loading_icon');
+  });
+
+  it('marks still-running tool rows as succeeded on the terminal card', async () => {
+    mocks.updateCardKitCard.mockReset();
+    mocks.setCardStreamingMode.mockReset();
+    mocks.setCardStreamingMode.mockResolvedValueOnce(undefined);
+    mocks.updateCardKitCard.mockResolvedValueOnce(undefined);
+
+    const sessionKey = 'agent:test:session';
+    startToolUseTraceRun(sessionKey);
+    recordToolUseStart({
+      sessionKey,
+      toolName: 'exec',
+      toolParams: { command: 'npm test' },
+    });
+
+    const controller = createController() as unknown as {
+      cardKit: {
+        cardKitCardId: string | null;
+        originalCardKitCardId: string | null;
+        cardKitSequence: number;
+        cardMessageId: string | null;
+      };
+      text: { accumulatedText: string };
+      finalizationPromise: Promise<void> | null;
+      markFullyComplete(): void;
+    };
+    controller.cardKit.cardKitCardId = 'card_1';
+    controller.cardKit.originalCardKitCardId = 'card_1';
+    controller.cardKit.cardMessageId = 'om_1';
+    controller.text.accumulatedText = 'final answer';
+
+    controller.markFullyComplete();
+    await controller.finalizationPromise;
+
+    const finalCard = JSON.stringify(mocks.updateCardKitCard.mock.calls[0][0].card);
+    expect(finalCard).toContain('Succeeded');
+    expect(finalCard).not.toContain('Running');
+    clearToolUseTraceRun(sessionKey);
   });
 });
