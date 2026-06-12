@@ -203,7 +203,7 @@ async function fetchCurrentVersion(params: {
   const jwt = await getOrchestratorJwt(cfg);
   if (!jwt) return undefined;
 
-  const url = orchestratorApiUrl(resolveOrchestratorUrl(), 'feishu');
+  const url = orchestratorApiUrl(resolveOrchestratorUrl(), 'channels/feishu');
   url.searchParams.set('sandbox_id', sandboxId);
   try {
     const resp = await fetch(url, {
@@ -227,7 +227,7 @@ async function callUpgradeInit(params: {
   const jwt = await getOrchestratorJwt(cfg);
   if (!jwt) throw new Error('orchestrator auth failed: no JWT');
 
-  const url = orchestratorApiUrl(resolveOrchestratorUrl(), 'feishu/auto-bind/upgrade/init');
+  const url = orchestratorApiUrl(resolveOrchestratorUrl(), 'channels/feishu/auto-bind/upgrade/init');
   const resp = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
@@ -253,7 +253,7 @@ async function consumeUpgradeStream(params: {
   const jwt = await getOrchestratorJwt(cfg);
   if (!jwt) throw new Error('orchestrator auth failed: no JWT');
 
-  const url = orchestratorApiUrl(resolveOrchestratorUrl(), 'feishu/auto-bind/upgrade/stream');
+  const url = orchestratorApiUrl(resolveOrchestratorUrl(), 'channels/feishu/auto-bind/upgrade/stream');
   url.searchParams.set('sandbox_id', sandboxId);
   url.searchParams.set('account_id', accountId);
 
