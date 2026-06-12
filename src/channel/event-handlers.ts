@@ -27,6 +27,7 @@ import { larkLogger } from '../core/lark-logger';
 import { handleCardAction } from '../tools/auto-auth';
 import { handleAskUserAction } from '../tools/ask-user-question';
 import { handleMenuPickModelEvent as dispatchMenuPickModelEvent, handleModelPickerAction } from '../tools/model-picker';
+import { UPGRADE_COMMAND, handleUpgradeCommand } from '../tools/upgrade-button';
 import { buildQueueKey, enqueueFeishuChatTask, getActiveDispatcher, hasActiveTask } from './chat-queue';
 import { extractRawTextFromEvent, isLikelyAbortText } from './abort-detect';
 import type { MonitorContext } from './types';
@@ -128,6 +129,20 @@ export async function handleMessageEvent(ctx: MonitorContext, data: unknown): Pr
           });
         }
       }
+    }
+
+    // ---- /upgrade_feishu command fast-path ----
+    if (abortText?.trim() === UPGRADE_COMMAND) {
+      handleUpgradeCommand({
+        cfg: ctx.cfg,
+        accountId,
+        senderOpenId: senderOpenId ?? '',
+        chatId,
+        replyToMessageId: msgId,
+      }).catch((err) => {
+        error(`feishu[${accountId}]: upgrade command failed: ${String(err)}`);
+      });
+      return;
     }
 
     const { status } = enqueueFeishuChatTask({

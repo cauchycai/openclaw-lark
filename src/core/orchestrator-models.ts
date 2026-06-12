@@ -100,7 +100,7 @@ function readEaglelabApiKeyFromSandboxProfiles(): string | undefined {
   return undefined;
 }
 
-function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined {
+export function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined {
   const fromProcess = normalizeSecret(process.env[EAGLELAB_API_KEY_ENV]);
   if (fromProcess) return fromProcess;
 
@@ -127,7 +127,7 @@ export function resolveOrchestratorUrl(apiBase?: string): string {
   return LIVE_COWORK_URL;
 }
 
-function orchestratorApiUrl(orchestratorRoot: string, resourcePath: string): URL {
+export function orchestratorApiUrl(orchestratorRoot: string, resourcePath: string): URL {
   const base = orchestratorRoot.replace(/\/+$/u, '');
   const resource = resourcePath.replace(/^\/+/u, '');
   return new URL(`/api/v1/${resource}`, base);
@@ -146,7 +146,7 @@ function normalizeCostMultiplier(value: unknown): number {
   return 1;
 }
 
-async function fetchOrchestratorJwt(apiKey: string, orchestratorRoot: string): Promise<string | undefined> {
+export async function fetchOrchestratorJwt(apiKey: string, orchestratorRoot: string): Promise<string | undefined> {
   const now = Date.now();
   if (jwtCache && jwtCache.expiresAt > now) {
     return jwtCache.token;
