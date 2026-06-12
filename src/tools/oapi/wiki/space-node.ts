@@ -60,9 +60,16 @@ const FeishuWikiSpaceNodeSchema = Type.Union([
   // GET NODE
   Type.Object({
     action: Type.Literal('get'),
-    token: Type.String({
-      description: 'node token',
-    }),
+    token: Type.Optional(
+      Type.String({
+        description: 'wiki node token, wiki URL, or document object token',
+      }),
+    ),
+    node_token: Type.Optional(
+      Type.String({
+        description: 'alias for token when resolving a wiki node',
+      }),
+    ),
     obj_type: Type.Optional(
       StringEnum(
         ['doc', 'sheet', 'mindnote', 'bitable', 'file', 'docx', 'slides', 'wiki'],
@@ -158,7 +165,8 @@ type FeishuWikiSpaceNodeParams =
     }
   | {
       action: 'get';
-      token: string;
+      token?: string;
+      node_token?: string;
       obj_type?: string;
     }
   | {
@@ -184,6 +192,24 @@ type FeishuWikiSpaceNodeParams =
       target_parent_token?: string;
       title?: string;
     };
+
+export function normalizeWikiSpaceNodeGetToken(params: {
+  token?: string;
+  node_token?: string;
+}): string | undefined {
+  const rawToken = params.token?.trim() || params.node_token?.trim();
+  if (!rawToken) return undefined;
+
+  try {
+    const url = new URL(rawToken);
+    const match = url.pathname.match(/\/wiki\/([^/?#]+)/u);
+    if (match?.[1]) return decodeURIComponent(match[1]);
+  } catch {
+    // Not a URL; use the value as a token.
+  }
+
+  return rawToken;
+}
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -251,7 +277,17 @@ export function registerFeishuWikiSpaceNodeTool(api: OpenClawPluginApi): boolean
             // GET NODE
             // -----------------------------------------------------------------
             case 'get': {
-              log.info(`get: token=${p.token}, obj_type=${p.obj_type ?? 'wiki'}`);
+              const token = normalizeWikiSpaceNodeGetToken(p);
+              if (!token) {
+                return json({
+                  error: 'Missing required parameter: token',
+                  message:
+                    'feishu_wiki_space_node get requires token. node_token is accepted as an alias for wiki node tokens.',
+                  accepted_parameters: ['token', 'node_token'],
+                });
+              }
+
+              log.info(`get: token=${token}, obj_type=${p.obj_type ?? 'wiki'}`);
 
               const res = await client.invoke(
                 'feishu_wiki_space_node.get',
@@ -259,7 +295,7 @@ export function registerFeishuWikiSpaceNodeTool(api: OpenClawPluginApi): boolean
                   sdk.wiki.space.getNode(
                     {
                       params: {
-                        token: p.token,
+                        token,
                         obj_type: (p.obj_type || 'wiki') as any,
                       },
                     },
@@ -269,7 +305,7 @@ export function registerFeishuWikiSpaceNodeTool(api: OpenClawPluginApi): boolean
               );
               assertLarkOk(res);
 
-              log.info(`get: retrieved node ${p.token}`);
+              log.info(`get: retrieved node ${token}`);
 
               return json({
                 node: res.data?.node,
