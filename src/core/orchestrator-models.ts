@@ -17,6 +17,8 @@ const log = larkLogger('core/orchestrator-models');
 export const EAGLELAB_API_KEY_ENV = 'EAGLELAB_API_KEY';
 /** Turing model API base; used only to infer live vs test for cowork orchestrator URL. */
 export const EAGLELAB_API_BASE_ENV = 'EAGLELAB_API_BASE';
+/** Override the orchestrator root URL entirely (e.g. for dev/staging environments). */
+export const CLAW_ORCHESTRATOR_URL_ENV = 'CLAW_ORCHESTRATOR_URL';
 const LIVE_COWORK_URL = 'https://live-cowork.tcljd.com';
 const TEST_COWORK_URL = 'https://test-cowork.tcljd.com';
 
@@ -120,6 +122,8 @@ export function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined 
 
 /** Map EAGLELAB_API_BASE (live-turing vs test-turing) → cowork orchestrator root. */
 export function resolveOrchestratorUrl(apiBase?: string): string {
+  const override = process.env[CLAW_ORCHESTRATOR_URL_ENV]?.trim();
+  if (override) return override.replace(/\/+$/, '');
   const normalized = (apiBase ?? process.env[EAGLELAB_API_BASE_ENV] ?? '').trim().toLowerCase();
   if (normalized.includes('test')) {
     return TEST_COWORK_URL;
