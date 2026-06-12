@@ -218,6 +218,23 @@ async function fetchCurrentVersion(params: {
   }
 }
 
+async function callUpgradeCleanup(params: { cfg: ClawdbotConfig; sandboxId: string }): Promise<void> {
+  const { cfg, sandboxId } = params;
+  const jwt = await getOrchestratorJwt(cfg);
+  if (!jwt) return;
+  const url = orchestratorApiUrl(resolveOrchestratorUrl(), 'channels/feishu/auto-bind');
+  url.searchParams.set('sandbox_id', sandboxId);
+  try {
+    await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${jwt}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (e) {
+    log.warn(`upgrade cleanup failed (non-fatal): ${e}`);
+  }
+}
+
 async function callUpgradeInit(params: {
   cfg: ClawdbotConfig;
   sandboxId: string;
@@ -406,18 +423,20 @@ async function runUpgradeFlow(params: {
   };
 
   try {
-    // Step 1: init — get QR token
+    // Step 1: cleanup any leftover browser process, then init
+    await callUpgradeCleanup({ cfg, sandboxId });
     const initResult = await callUpgradeInit({ cfg, sandboxId, accountId });
 
     // Step 2: generate QR image and upload to Feishu
     const qrBuffer = await QRCode.toBuffer(initResult.qr_content, { type: 'png', margin: 2, scale: 6 });
     const { imageKey } = await uploadImageLark({ cfg, image: qrBuffer, accountId });
 
-    // Step 3: show QR card
+    // Step 3: show QR card — stays visible until upgrade completes
     await updateCard(buildUpgradeQrCard(imageKey));
     log.info(`upgrade QR shown image_key=${imageKey} account=${accountId}`);
 
     // Step 4: consume SSE until done/error
+    // Progress updates are sent as separate messages; QR card stays until final result
     const abortCtrl = new AbortController();
     const timer = setTimeout(() => abortCtrl.abort(), UPGRADE_STREAM_TIMEOUT_MS);
     let lastStatus = '';
@@ -430,7 +449,17 @@ async function runUpgradeFlow(params: {
           lastStatus = status;
           const zh = TEXTS.zh_cn.statusLabels[status] ?? TEXTS.zh_cn.statusFallback(status);
           const en = TEXTS.en_us.statusLabels[status] ?? TEXTS.en_us.statusFallback(status);
-          await updateCard(buildUpgradeProgressCard(zh, en));
+          // Send progress as a new message, don't touch the QR card
+          try {
+            await sendMessageFeishu({
+              cfg,
+              to: chatId,
+              text: zh,
+              accountId,
+            });
+          } catch (e) {
+            log.warn(`upgrade progress message failed: ${e}`);
+          }
         },
         signal: abortCtrl.signal,
       });
@@ -438,6 +467,7 @@ async function runUpgradeFlow(params: {
       clearTimeout(timer);
     }
 
+    // Replace QR card with final result
     if (result.type === 'done') {
       const displayName = result.feishu_display_name ?? '机器人';
       const version = result.version ?? '最新版本';
