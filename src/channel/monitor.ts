@@ -16,6 +16,7 @@ import { LarkClient } from '../core/lark-client';
 import { larkLogger } from '../core/lark-logger';
 import { drainShutdownHooks } from '../core/shutdown-hooks';
 import { MessageDedup } from '../messaging/inbound/dedup';
+import { completePendingRestartNotification } from '../tools/restart-button';
 import type { MonitorContext, MonitorFeishuOpts } from './types';
 import {
   handleBotMembershipEvent,
@@ -94,6 +95,15 @@ async function monitorSingleAccount(params: {
     log,
     error,
   };
+
+  try {
+    await completePendingRestartNotification({
+      cfg: ctx.cfg,
+      accountId,
+    });
+  } catch (err) {
+    log(`feishu[${accountId}]: restart completion notification failed: ${String(err)}`);
+  }
 
   await lark.startWS({
     handlers: {

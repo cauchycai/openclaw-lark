@@ -17,6 +17,8 @@ const log = larkLogger('core/orchestrator-models');
 export const EAGLELAB_API_KEY_ENV = 'EAGLELAB_API_KEY';
 /** Turing model API base; used only to infer live vs test for cowork orchestrator URL. */
 export const EAGLELAB_API_BASE_ENV = 'EAGLELAB_API_BASE';
+/** Override the orchestrator root URL entirely (e.g. for dev/staging environments). */
+export const CLAW_ORCHESTRATOR_URL_ENV = 'CLAW_ORCHESTRATOR_URL';
 const LIVE_COWORK_URL = 'https://live-cowork.tcljd.com';
 const TEST_COWORK_URL = 'https://test-cowork.tcljd.com';
 
@@ -63,7 +65,20 @@ interface SsoResponse {
 
 let jwtCache: { token: string; expiresAt: number } | undefined;
 
-const PROFILE_EXPORT_PATTERN = /^\s*export\s+EAGLELAB_API_KEY\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s#;]+))/u;
+function buildShellExportPattern(varName: string): RegExp {
+  return new RegExp(`^\\s*export\\s+${varName}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s#;]+))`, 'u');
+}
+
+export function parseShellExportVar(content: string, varName: string): string | undefined {
+  const pattern = buildShellExportPattern(varName);
+  for (const line of content.split('\n')) {
+    const match = line.match(pattern);
+    if (!match) continue;
+    const value = normalizeSecret(match[1] ?? match[2] ?? match[3]);
+    if (value) return value;
+  }
+  return undefined;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -78,13 +93,7 @@ function normalizeSecret(value: unknown): string | undefined {
 }
 
 export function parseEaglelabApiKeyFromShellExport(content: string): string | undefined {
-  for (const line of content.split('\n')) {
-    const match = line.match(PROFILE_EXPORT_PATTERN);
-    if (!match) continue;
-    const value = normalizeSecret(match[1] ?? match[2] ?? match[3]);
-    if (value) return value;
-  }
-  return undefined;
+  return parseShellExportVar(content, EAGLELAB_API_KEY_ENV);
 }
 
 function readEaglelabApiKeyFromSandboxProfiles(): string | undefined {
@@ -100,7 +109,7 @@ function readEaglelabApiKeyFromSandboxProfiles(): string | undefined {
   return undefined;
 }
 
-function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined {
+export function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined {
   const fromProcess = normalizeSecret(process.env[EAGLELAB_API_KEY_ENV]);
   if (fromProcess) return fromProcess;
 
@@ -120,6 +129,8 @@ function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined {
 
 /** Map EAGLELAB_API_BASE (live-turing vs test-turing) → cowork orchestrator root. */
 export function resolveOrchestratorUrl(apiBase?: string): string {
+  const override = process.env[CLAW_ORCHESTRATOR_URL_ENV]?.trim();
+  if (override) return override.replace(/\/+$/, '');
   const normalized = (apiBase ?? process.env[EAGLELAB_API_BASE_ENV] ?? '').trim().toLowerCase();
   if (normalized.includes('test')) {
     return TEST_COWORK_URL;
@@ -127,7 +138,7 @@ export function resolveOrchestratorUrl(apiBase?: string): string {
   return LIVE_COWORK_URL;
 }
 
-function orchestratorApiUrl(orchestratorRoot: string, resourcePath: string): URL {
+export function orchestratorApiUrl(orchestratorRoot: string, resourcePath: string): URL {
   const base = orchestratorRoot.replace(/\/+$/u, '');
   const resource = resourcePath.replace(/^\/+/u, '');
   return new URL(`/api/v1/${resource}`, base);
@@ -146,7 +157,7 @@ function normalizeCostMultiplier(value: unknown): number {
   return 1;
 }
 
-async function fetchOrchestratorJwt(apiKey: string, orchestratorRoot: string): Promise<string | undefined> {
+export async function fetchOrchestratorJwt(apiKey: string, orchestratorRoot: string): Promise<string | undefined> {
   const now = Date.now();
   if (jwtCache && jwtCache.expiresAt > now) {
     return jwtCache.token;

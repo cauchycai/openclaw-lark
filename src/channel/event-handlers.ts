@@ -27,6 +27,7 @@ import { larkLogger } from '../core/lark-logger';
 import { handleCardAction } from '../tools/auto-auth';
 import { handleAskUserAction } from '../tools/ask-user-question';
 import { handleMenuPickModelEvent as dispatchMenuPickModelEvent, handleModelPickerAction } from '../tools/model-picker';
+import { handleMenuRestartEvent as dispatchMenuRestartEvent } from '../tools/restart-button';
 import { buildQueueKey, enqueueFeishuChatTask, getActiveDispatcher, hasActiveTask } from './chat-queue';
 import { extractRawTextFromEvent, isLikelyAbortText } from './abort-detect';
 import type { MonitorContext } from './types';
@@ -410,6 +411,7 @@ export async function handleMenuPickModelEvent(ctx: MonitorContext, data: unknow
   if (!isEventOwnershipValid(ctx, data)) return;
   try {
     await dispatchMenuPickModelEvent(ctx, data);
+    await dispatchMenuRestartEvent(ctx, data);
   } catch (err) {
     elog.warn(`application.bot.menu_v6 handler error: ${err}`);
   }
