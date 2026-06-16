@@ -136,6 +136,11 @@ function formatButtonLabel(entry: ModelCatalogEntry, isCurrent: boolean): string
 }
 
 function formatModelCommand(modelId: string): string {
+  // The "turing-claw/default" model is matched by the gateway using just
+  // the short name "default". Other models use their full modelId as-is.
+  if (modelId === 'turing-claw/default') {
+    return '/model default';
+  }
   return `/model ${modelId}`;
 }
 
