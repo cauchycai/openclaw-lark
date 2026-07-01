@@ -23,6 +23,7 @@ import {
   orchestratorApiUrl,
   resolveEaglelabApiKey,
   resolveOrchestratorUrl,
+  resolveUserJwtToken,
 } from '../core/orchestrator-models';
 import type { MonitorContext } from '../channel/types';
 import { sendCardFeishu, updateCardFeishu } from '../messaging/outbound/send';
@@ -122,8 +123,9 @@ function resolveSandboxId(): string | undefined {
 
 async function getOrchestratorJwt(cfg: ClawdbotConfig): Promise<string | undefined> {
   const apiKey = resolveEaglelabApiKey(cfg);
-  if (!apiKey) return undefined;
-  return fetchOrchestratorJwt(apiKey, resolveOrchestratorUrl());
+  const userJwt = resolveUserJwtToken(cfg);
+  if (!apiKey && !userJwt) return undefined;
+  return fetchOrchestratorJwt(apiKey, resolveOrchestratorUrl(), { cfg });
 }
 
 // ---------------------------------------------------------------------------

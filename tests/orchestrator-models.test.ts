@@ -5,12 +5,15 @@ vi.mock('../src/core/lark-logger', () => ({
 }));
 
 import {
+  COWORK_API_URL_ENV,
   EAGLELAB_API_BASE_ENV,
   EAGLELAB_API_KEY_ENV,
+  USER_JWT_TOKEN_ENV,
   clearOrchestratorAuthCache,
   formatModelLabel,
   listAvailableModelsFromOrchestrator,
   parseEaglelabApiKeyFromShellExport,
+  resolveEaglelabApiBase,
   resolveOrchestratorUrl,
 } from '../src/core/orchestrator-models';
 
@@ -57,6 +60,30 @@ describe('resolveOrchestratorUrl', () => {
   it('defaults to live-cowork when EAGLELAB_API_BASE is unset', () => {
     expect(resolveOrchestratorUrl('')).toBe('https://live-cowork.tcljd.com');
   });
+
+  it('prefers COWORK_API_URL when set', () => {
+    process.env[COWORK_API_URL_ENV] = 'https://test-cowork.tcljd.com';
+    try {
+      expect(resolveOrchestratorUrl('')).toBe('https://test-cowork.tcljd.com');
+    } finally {
+      delete process.env[COWORK_API_URL_ENV];
+    }
+  });
+});
+
+describe('resolveEaglelabApiBase', () => {
+  it('reads baseUrl from cfg when process env is unset', () => {
+    delete process.env[EAGLELAB_API_BASE_ENV];
+    expect(
+      resolveEaglelabApiBase({
+        models: {
+          providers: {
+            eaglelab: { baseUrl: 'https://test-turing.cn.llm.tcljd.com/api/v1' },
+          },
+        },
+      } as never),
+    ).toBe('https://test-turing.cn.llm.tcljd.com/api/v1');
+  });
 });
 
 describe('listAvailableModelsFromOrchestrator', () => {
@@ -68,13 +95,52 @@ describe('listAvailableModelsFromOrchestrator', () => {
     clearOrchestratorAuthCache();
     process.env[EAGLELAB_API_KEY_ENV] = 'test-api-key';
     process.env[EAGLELAB_API_BASE_ENV] = 'https://live-turing.cn.llm.tcljd.com/api/v1';
+    delete process.env[USER_JWT_TOKEN_ENV];
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     delete process.env[EAGLELAB_API_KEY_ENV];
     delete process.env[EAGLELAB_API_BASE_ENV];
+    delete process.env[USER_JWT_TOKEN_ENV];
     clearOrchestratorAuthCache();
+  });
+
+  it('uses USER_JWT_TOKEN without calling SSO', async () => {
+    process.env[USER_JWT_TOKEN_ENV] = 'sandbox-jwt-token';
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            model_id: 'turing-claw/kimi',
+            name: 'kimi-k2.6',
+            enabled: true,
+            cost_multiplier: 1,
+          },
+        ],
+      }),
+    });
+
+    const result = await listAvailableModelsFromOrchestrator();
+    expect(result.entries).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://live-cowork.tcljd.com/api/v1/models');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: { Authorization: 'Bearer sandbox-jwt-token' },
+    });
+  });
+
+  it('falls back to SSO when USER_JWT_TOKEN is rejected', async () => {
+    process.env[USER_JWT_TOKEN_ENV] = 'expired-jwt';
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 401 })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'fresh-jwt' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ models: [] }) });
+
+    await listAvailableModelsFromOrchestrator();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/v1/auth/sso');
   });
 
   it('maps enabled orchestrator models to catalog entries via live-cowork', async () => {
@@ -120,20 +186,23 @@ describe('listAvailableModelsFromOrchestrator', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toBe('https://live-cowork.tcljd.com/api/v1/models');
   });
 
-  it('uses test-cowork when EAGLELAB_API_BASE contains test', async () => {
-    process.env[EAGLELAB_API_BASE_ENV] = 'https://test-turing.cn.llm.tcljd.com/api/v1';
+  it('uses test-cowork when cfg EAGLELAB_API_BASE contains test', async () => {
+    delete process.env[EAGLELAB_API_BASE_ENV];
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'jwt' }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ models: [] }) });
-    await listAvailableModelsFromOrchestrator();
+    await listAvailableModelsFromOrchestrator({
+      env: { EAGLELAB_API_BASE: 'https://test-turing.cn.llm.tcljd.com/api/v1' },
+    } as never);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('test-cowork.tcljd.com/api/v1/auth/sso');
   });
 
-  it('returns empty list when api key is missing', async () => {
+  it('returns empty list when api key and USER_JWT_TOKEN are missing', async () => {
     delete process.env[EAGLELAB_API_KEY_ENV];
+    delete process.env[USER_JWT_TOKEN_ENV];
     const result = await listAvailableModelsFromOrchestrator();
     expect(result.entries).toEqual([]);
-    expect(result.error).toContain('EAGLELAB_API_KEY');
+    expect(result.error).toContain('USER_JWT_TOKEN');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
