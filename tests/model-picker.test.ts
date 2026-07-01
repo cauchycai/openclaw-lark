@@ -93,6 +93,26 @@ describe('resolveCatalogModelIdFromSessionEntry', () => {
     expect(modelId).toBe('turing-claw/glm');
   });
 
+  it('maps legacy providerOverride=turing-claw + modelOverride=default', () => {
+    const modelId = resolveCatalogModelIdFromSessionEntry({
+      cfg: {
+        agents: {
+          defaults: {
+            model: { primary: 'eaglelab/turing-claw/default' },
+          },
+        },
+      } as never,
+      agentId: 'main',
+      entry: {
+        providerOverride: 'turing-claw',
+        modelOverride: 'default',
+        modelOverrideSource: 'user',
+      },
+      entries: SAMPLE_ENTRIES,
+    });
+    expect(modelId).toBe('turing-claw/default');
+  });
+
   it('maps provider/model ref to orchestrator model_id', () => {
     expect(
       resolveCatalogModelIdFromSessionModelRef(
@@ -100,6 +120,38 @@ describe('resolveCatalogModelIdFromSessionEntry', () => {
         SAMPLE_ENTRIES,
       ),
     ).toBe('turing-claw/glm');
+  });
+
+  it('resolves tail segment when session stores short model id', () => {
+    expect(
+      resolveCatalogModelIdFromSessionModelRef({ provider: 'eaglelab', model: 'glm' }, SAMPLE_ENTRIES),
+    ).toBe('turing-claw/glm');
+  });
+
+  it('disambiguates duplicate tails using full session model id', () => {
+    const entries = [
+      ...SAMPLE_ENTRIES,
+      {
+        modelId: 'turing-claw/kimi',
+        name: 'kimi-k2.6',
+        label: 'kimi-k2.6 · 1.0x cost',
+        ref: 'eaglelab/turing-claw/kimi',
+        isPrimary: false,
+      },
+      {
+        modelId: 'legacy-claw/kimi',
+        name: 'legacy-kimi',
+        label: 'legacy-kimi · 1.0x cost',
+        ref: 'eaglelab/legacy-claw/kimi',
+        isPrimary: false,
+      },
+    ];
+    expect(
+      resolveCatalogModelIdFromSessionModelRef(
+        { provider: 'eaglelab', model: 'turing-claw/kimi' },
+        entries,
+      ),
+    ).toBe('turing-claw/kimi');
   });
 });
 
@@ -111,7 +163,7 @@ describe('findPrimaryModelEntry', () => {
 });
 
 describe('buildModelPickerCard', () => {
-  it('shows API name in subtitle and model_id only in button value', () => {
+  it('includes model_id in button value', () => {
     const card = buildModelPickerCard({
       currentModelId: 'turing-claw/glm',
       entries: SAMPLE_ENTRIES,
@@ -176,6 +228,7 @@ describe('handleMenuPickModelEvent', () => {
 describe('handleModelPickerAction', () => {
   beforeEach(() => {
     mockDispatchSyntheticTextMessage.mockClear();
+    mockListAvailableModelsFromOrchestrator.mockClear();
     mockListAvailableModelsFromOrchestrator.mockResolvedValue({ entries: SAMPLE_ENTRIES });
     clearModelCatalogCache();
     vi.useFakeTimers();
@@ -185,8 +238,9 @@ describe('handleModelPickerAction', () => {
     vi.useRealTimers();
   });
 
-  it('toast uses API name while inject uses model_id', async () => {
+  it('toast and inject use model_id', async () => {
     await listModelCatalog({} as never);
+    mockListAvailableModelsFromOrchestrator.mockClear();
 
     const result = handleModelPickerAction(
       {
@@ -201,15 +255,93 @@ describe('handleModelPickerAction', () => {
     expect(result).toMatchObject({
       toast: {
         type: 'success',
-        content: 'Switched to glm-5.1',
-        i18n: { zh_cn: '已切换至 glm-5.1', en_us: 'Switched to glm-5.1' },
+        content: 'Switched to turing-claw/glm',
+        i18n: { zh_cn: '已切换至 turing-claw/glm', en_us: 'Switched to turing-claw/glm' },
+      },
+    });
+
+    await vi.runAllTimersAsync();
+    expect(mockListAvailableModelsFromOrchestrator).not.toHaveBeenCalled();
+    expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '/model eaglelab/turing-claw/glm',
+      }),
+    );
+  });
+
+  it('injects full provider/model ref for default model', async () => {
+    await listModelCatalog({} as never);
+
+    handleModelPickerAction(
+      {
+        operator: { open_id: 'ou_user_1' },
+        open_chat_id: 'oc_chat_1',
+        action: { value: { action: ACTION_SET_MODEL, model_id: 'turing-claw/default' } },
+      },
+      {} as never,
+      'feishu-a1',
+    );
+
+    await vi.runAllTimersAsync();
+    expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '/model eaglelab/turing-claw/default',
+      }),
+    );
+  });
+
+  it('injects eaglelab/model_id without catalog lookup', async () => {
+    const result = handleModelPickerAction(
+      {
+        operator: { open_id: 'ou_user_1' },
+        open_chat_id: 'oc_chat_1',
+        action: { value: { action: ACTION_SET_MODEL, model_id: 'turing-claw/glm' } },
+      },
+      {} as never,
+      'feishu-a1',
+    );
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to turing-claw/glm',
+        i18n: { zh_cn: '已切换至 turing-claw/glm', en_us: 'Switched to turing-claw/glm' },
+      },
+    });
+    await vi.runAllTimersAsync();
+    expect(mockListAvailableModelsFromOrchestrator).not.toHaveBeenCalled();
+    expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '/model eaglelab/turing-claw/glm',
+      }),
+    );
+  });
+
+  it('does not reject model_id when cached catalog lacks the entry', async () => {
+    await listModelCatalog({} as never);
+
+    const result = handleModelPickerAction(
+      {
+        operator: { open_id: 'ou_user_1' },
+        open_chat_id: 'oc_chat_1',
+        action: { value: { action: ACTION_SET_MODEL, model_id: 'turing-claw/new-model' } },
+      },
+      {} as never,
+      'feishu-a1',
+    );
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to turing-claw/new-model',
+        i18n: { zh_cn: '已切换至 turing-claw/new-model', en_us: 'Switched to turing-claw/new-model' },
       },
     });
 
     await vi.runAllTimersAsync();
     expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: '/model turing-claw/glm',
+        text: '/model eaglelab/turing-claw/new-model',
       }),
     );
   });
