@@ -19,8 +19,14 @@ export const EAGLELAB_API_KEY_ENV = 'EAGLELAB_API_KEY';
 export const EAGLELAB_API_BASE_ENV = 'EAGLELAB_API_BASE';
 /** Override the orchestrator root URL entirely (e.g. for dev/staging environments). */
 export const CLAW_ORCHESTRATOR_URL_ENV = 'CLAW_ORCHESTRATOR_URL';
+/** Cowork orchestrator public URL (injected by orchestrator on sandbox boot). */
+export const COWORK_API_URL_ENV = 'COWORK_API_URL';
+/** Orchestrator JWT injected on sandbox boot (same as SSO access_token). */
+export const USER_JWT_TOKEN_ENV = 'USER_JWT_TOKEN';
 const LIVE_COWORK_URL = 'https://live-cowork.tcljd.com';
 const TEST_COWORK_URL = 'https://test-cowork.tcljd.com';
+/** OpenClaw provider id for orchestrator-managed models (fixed; matches orchestrator merge). */
+export const MODEL_PROVIDER_ID = 'eaglelab';
 
 /** In-memory catalog/JWT cache TTL (not persisted to disk). */
 export const MODEL_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -127,10 +133,45 @@ export function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined 
   return readEaglelabApiKeyFromSandboxProfiles();
 }
 
-/** Map EAGLELAB_API_BASE (live-turing vs test-turing) → cowork orchestrator root. */
+export function resolveUserJwtToken(cfg?: ClawdbotConfig): string | undefined {
+  const fromProcess = normalizeSecret(process.env[USER_JWT_TOKEN_ENV]);
+  if (fromProcess) return fromProcess;
+
+  if (cfg) {
+    const resolved = getResolvedConfig(cfg) as ClawdbotConfig & { env?: Record<string, string> };
+    return normalizeSecret(resolved.env?.[USER_JWT_TOKEN_ENV]);
+  }
+
+  return undefined;
+}
+
+export function resolveEaglelabApiBase(cfg?: ClawdbotConfig): string | undefined {
+  const fromProcess = (process.env[EAGLELAB_API_BASE_ENV] ?? '').trim();
+  if (fromProcess) return fromProcess;
+
+  if (cfg) {
+    const resolved = getResolvedConfig(cfg) as ClawdbotConfig & {
+      env?: Record<string, string>;
+      models?: { providers?: Record<string, { baseUrl?: string }> };
+    };
+    const fromCfgEnv = normalizeSecret(resolved.env?.[EAGLELAB_API_BASE_ENV]);
+    if (fromCfgEnv) return fromCfgEnv;
+    const fromProvider = resolved.models?.providers?.eaglelab?.baseUrl;
+    if (typeof fromProvider === 'string') {
+      const trimmed = fromProvider.trim();
+      if (trimmed && !/^\$\{[^}]+\}$/u.test(trimmed)) return trimmed;
+    }
+  }
+
+  return undefined;
+}
+
+/** Map cowork URL / EAGLELAB_API_BASE (live-turing vs test-turing) → orchestrator root. */
 export function resolveOrchestratorUrl(apiBase?: string): string {
   const override = process.env[CLAW_ORCHESTRATOR_URL_ENV]?.trim();
   if (override) return override.replace(/\/+$/, '');
+  const coworkUrl = (process.env[COWORK_API_URL_ENV] ?? '').trim();
+  if (coworkUrl) return coworkUrl.replace(/\/+$/, '');
   const normalized = (apiBase ?? process.env[EAGLELAB_API_BASE_ENV] ?? '').trim().toLowerCase();
   if (normalized.includes('test')) {
     return TEST_COWORK_URL;
@@ -157,10 +198,28 @@ function normalizeCostMultiplier(value: unknown): number {
   return 1;
 }
 
-export async function fetchOrchestratorJwt(apiKey: string, orchestratorRoot: string): Promise<string | undefined> {
+export async function fetchOrchestratorJwt(
+  apiKey: string | undefined,
+  orchestratorRoot: string,
+  options?: { cfg?: ClawdbotConfig; forceSso?: boolean },
+): Promise<string | undefined> {
+  const cfg = options?.cfg;
+  const forceSso = options?.forceSso ?? false;
   const now = Date.now();
-  if (jwtCache && jwtCache.expiresAt > now) {
+  if (!forceSso && jwtCache && jwtCache.expiresAt > now) {
     return jwtCache.token;
+  }
+
+  if (!forceSso) {
+    const userJwt = resolveUserJwtToken(cfg);
+    if (userJwt) {
+      jwtCache = { token: userJwt, expiresAt: now + MODEL_CATALOG_CACHE_TTL_MS };
+      return userJwt;
+    }
+  }
+
+  if (!apiKey) {
+    return undefined;
   }
 
   const url = orchestratorApiUrl(orchestratorRoot, 'auth/sso');
@@ -198,7 +257,7 @@ function mapOrchestratorModel(record: OrchestratorModelRecord): ModelCatalogEntr
     modelId,
     name,
     label: formatModelLabel(name, normalizeCostMultiplier(record.cost_multiplier)),
-    ref: `eaglelab/${modelId}`,
+    ref: `${MODEL_PROVIDER_ID}/${modelId}`,
     isPrimary: record.is_primary === true,
   };
 }
@@ -207,18 +266,19 @@ export async function listAvailableModelsFromOrchestrator(
   cfg?: ClawdbotConfig,
 ): Promise<{ entries: ModelCatalogEntry[]; error?: string }> {
   const apiKey = resolveEaglelabApiKey(cfg);
-  if (!apiKey) {
-    return { entries: [], error: 'missing EAGLELAB_API_KEY' };
+  const userJwt = resolveUserJwtToken(cfg);
+  if (!apiKey && !userJwt) {
+    return { entries: [], error: 'missing EAGLELAB_API_KEY or USER_JWT_TOKEN' };
   }
 
-  const orchestratorRoot = resolveOrchestratorUrl();
+  const orchestratorRoot = resolveOrchestratorUrl(resolveEaglelabApiBase(cfg));
   try {
-    const jwt = await fetchOrchestratorJwt(apiKey, orchestratorRoot);
+    let jwt = await fetchOrchestratorJwt(apiKey, orchestratorRoot, { cfg });
     if (!jwt) {
-      return { entries: [], error: 'orchestrator sso failed' };
+      return { entries: [], error: 'orchestrator auth failed' };
     }
 
-    const response = await fetch(orchestratorApiUrl(orchestratorRoot, 'models'), {
+    let response = await fetch(orchestratorApiUrl(orchestratorRoot, 'models'), {
       method: 'GET',
       headers: {
         Accept: 'application/json',
@@ -226,6 +286,22 @@ export async function listAvailableModelsFromOrchestrator(
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+
+    if (response.status === 401 && userJwt) {
+      clearOrchestratorAuthCache();
+      jwt = await fetchOrchestratorJwt(apiKey, orchestratorRoot, { cfg, forceSso: true });
+      if (!jwt) {
+        return { entries: [], error: 'orchestrator auth failed' };
+      }
+      response = await fetch(orchestratorApiUrl(orchestratorRoot, 'models'), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${jwt}`,
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    }
 
     if (!response.ok) {
       log.warn(`orchestrator models failed: HTTP ${response.status}`);

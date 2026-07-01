@@ -4,7 +4,7 @@
  *
  * Feishu dynamic model picker:
  * - application.bot.menu_v6 (event_key=turingclaw_pick_model) → send card
- * - card.action.trigger (action=set_model) → inject /model model_id
+ * - card.action.trigger (action=set_model) → inject /model ref
  */
 
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
@@ -26,6 +26,7 @@ import {
   getCachedModelCatalog,
   listModelCatalog,
 } from '../core/model-catalog';
+import { MODEL_PROVIDER_ID } from '../core/orchestrator-models';
 import { dispatchSyntheticTextMessage } from '../messaging/inbound/synthetic-message';
 import { sendCardFeishu, sendMessageFeishu } from '../messaging/outbound/send';
 
@@ -51,7 +52,6 @@ const CARD_TEXTS = {
     emptyBody: '暂无可用模型，请联系管理员，或直接在对话中使用 `/model` 命令。',
     loadFailed: '暂时无法加载模型列表，请稍后再试或使用 `/model` 命令切换。',
     switchedTo: (label: string) => `已切换至 ${label}`,
-    unknownModel: '未知模型，请重新打开模型选择卡片',
   },
   en_us: {
     title: 'Select Model',
@@ -62,7 +62,6 @@ const CARD_TEXTS = {
     emptyBody: 'No models are available. Contact your admin, or use `/model` in chat.',
     loadFailed: 'Unable to load the model list. Try again later or use `/model` in chat.',
     switchedTo: (label: string) => `Switched to ${label}`,
-    unknownModel: 'Unknown model. Please reopen the model picker.',
   },
 } as const;
 
@@ -136,28 +135,60 @@ function formatButtonLabel(entry: ModelCatalogEntry, isCurrent: boolean): string
 }
 
 function formatModelCommand(modelId: string): string {
-  // The "turing-claw/default" model is matched by the gateway using just
-  // the short name "default". Other models use their full modelId as-is.
-  if (modelId === 'turing-claw/default') {
-    return '/model default';
-  }
-  return `/model ${modelId}`;
+  return `/model ${MODEL_PROVIDER_ID}/${modelId.trim()}`;
 }
 
-function resolveCurrentModelEntry(
-  sessionModel: string | undefined,
+/** Model id namespace stored mistakenly as providerOverride in older sessions. */
+const MODEL_NAMESPACE_PROVIDERS = new Set(['turing-claw']);
+
+function normalizeModelToken(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isModelNamespaceProvider(provider: string | undefined): boolean {
+  return Boolean(provider && MODEL_NAMESPACE_PROVIDERS.has(normalizeModelToken(provider)));
+}
+
+function findCatalogEntryByModelId(
+  modelId: string,
   entries: ModelCatalogEntry[],
 ): ModelCatalogEntry | undefined {
-  if (!sessionModel?.trim()) return undefined;
-  const normalized = sessionModel.trim();
-  const byRef = entries.find((entry) => entry.ref === normalized);
-  if (byRef) return byRef;
-  return entries.find(
-    (entry) =>
-      normalized === entry.modelId ||
-      normalized.endsWith(`/${entry.modelId}`) ||
-      normalized.endsWith(entry.modelId),
-  );
+  const normalized = normalizeModelToken(modelId);
+  return entries.find((entry) => normalizeModelToken(entry.modelId) === normalized);
+}
+
+function findCatalogEntryByRef(ref: string, entries: ModelCatalogEntry[]): ModelCatalogEntry | undefined {
+  const normalized = normalizeModelToken(ref);
+  return entries.find((entry) => normalizeModelToken(entry.ref) === normalized);
+}
+
+/** Match catalog by last path segment; disambiguate with full session model when needed. */
+function findCatalogEntryByTail(
+  tail: string,
+  entries: ModelCatalogEntry[],
+  preferModelId?: string,
+): ModelCatalogEntry | undefined {
+  const normalizedTail = normalizeModelToken(tail);
+  const matches = entries.filter((entry) => {
+    const modelId = normalizeModelToken(entry.modelId);
+    return modelId === normalizedTail || modelId.endsWith(`/${normalizedTail}`);
+  });
+  if (matches.length === 1) return matches[0];
+  if (matches.length <= 1) return undefined;
+
+  const preferred = preferModelId?.trim();
+  if (!preferred) return undefined;
+
+  const normalizedPreferred = normalizeModelToken(preferred);
+  const exact = matches.find((entry) => normalizeModelToken(entry.modelId) === normalizedPreferred);
+  if (exact) return exact;
+
+  const preferredTail = normalizedPreferred.split('/').pop() ?? normalizedPreferred;
+  const tailFiltered = matches.filter((entry) => {
+    const modelId = normalizeModelToken(entry.modelId);
+    return modelId === preferredTail || modelId.endsWith(`/${preferredTail}`);
+  });
+  return tailFiltered.length === 1 ? tailFiltered[0] : undefined;
 }
 
 function readSessionStringField(
@@ -177,6 +208,12 @@ function normalizeStoredOverrideModel(params: {
   const modelOverride = typeof params.modelOverride === 'string' ? params.modelOverride.trim() : undefined;
   if (!providerOverride || !modelOverride) {
     return { providerOverride, modelOverride };
+  }
+  if (isModelNamespaceProvider(providerOverride)) {
+    const combined = modelOverride.includes('/')
+      ? modelOverride
+      : `${providerOverride}/${modelOverride}`;
+    return { providerOverride: MODEL_PROVIDER_ID, modelOverride: combined };
   }
   const providerPrefix = `${providerOverride.toLowerCase()}/`;
   return {
@@ -213,12 +250,27 @@ export function resolveCatalogModelIdFromSessionModelRef(
   modelRef: { provider: string; model: string },
   entries: ModelCatalogEntry[],
 ): string | undefined {
-  const candidates = [...new Set([modelRef.model, `${modelRef.provider}/${modelRef.model}`])];
-  for (const candidate of candidates) {
-    const entry = resolveCurrentModelEntry(candidate, entries);
-    if (entry) return entry.modelId;
+  const model = modelRef.model.trim();
+  if (!model) return undefined;
+
+  const provider = modelRef.provider.trim();
+  const fullRef = provider ? `${provider}/${model}` : model;
+
+  const byModelId = findCatalogEntryByModelId(model, entries);
+  if (byModelId) return byModelId.modelId;
+
+  const byRef = findCatalogEntryByRef(fullRef, entries);
+  if (byRef) return byRef.modelId;
+
+  if (provider !== MODEL_PROVIDER_ID) {
+    const eaglelabRef = `${MODEL_PROVIDER_ID}/${model}`;
+    const byEaglelabRef = findCatalogEntryByRef(eaglelabRef, entries);
+    if (byEaglelabRef) return byEaglelabRef.modelId;
   }
-  return undefined;
+
+  const tail = model.split('/').pop() ?? model;
+  const byTail = findCatalogEntryByTail(tail, entries, model);
+  return byTail?.modelId;
 }
 
 export function resolveCatalogModelIdFromSessionEntry(params: {
@@ -307,6 +359,11 @@ function getLarkRuntimeSafe(): typeof LarkClient.runtime | undefined {
 
 type SessionStore = ReturnType<typeof loadSessionStore>;
 
+interface SessionPickerContext {
+  agentId: string;
+  sessionEntry?: Record<string, unknown>;
+}
+
 function readSessionStoreEntry(
   store: SessionStore,
   sessionKey: string,
@@ -344,12 +401,12 @@ function loadSessionStoreForAgent(params: {
   return loadSessionStore(storePath);
 }
 
-function resolveCurrentSessionModelId(params: {
+/** Load session store + entry without waiting on the model catalog. */
+function loadSessionPickerContext(params: {
   cfg: ClawdbotConfig;
   accountId: string;
   senderOpenId: string;
-  entries: ModelCatalogEntry[];
-}): string | undefined {
+}): SessionPickerContext | undefined {
   const core = getLarkRuntimeSafe();
   if (!core?.channel?.routing?.resolveAgentRoute) return undefined;
 
@@ -362,38 +419,36 @@ function resolveCurrentSessionModelId(params: {
 
   try {
     const store = loadSessionStoreForAgent({ cfg: params.cfg, agentId: route.agentId });
-    if (!store) return undefined;
+    if (!store) return { agentId: route.agentId };
 
     const candidateKeys = resolveCandidateSessionKeys(params.cfg, route.sessionKey);
     for (const candidateKey of candidateKeys) {
       const sessionEntry = readSessionStoreEntry(store, candidateKey);
-      if (!sessionEntry) continue;
-      const modelId = resolveCatalogModelIdFromSessionEntry({
-        cfg: params.cfg,
-        entry: sessionEntry,
-        agentId: route.agentId,
-        entries: params.entries,
-      });
-      if (modelId) return modelId;
+      if (sessionEntry) {
+        return { agentId: route.agentId, sessionEntry };
+      }
     }
+    return { agentId: route.agentId };
   } catch (err) {
     log.warn(
-      `failed to resolve current session model account=${params.accountId} sender=${params.senderOpenId}: ${String(err)}`,
+      `failed to load session for model picker account=${params.accountId} sender=${params.senderOpenId}: ${String(err)}`,
     );
+    return undefined;
   }
-
-  return undefined;
 }
 
-function resolveDisplayedCurrentModelId(params: {
+function resolveCurrentModelIdFromSessionContext(params: {
   cfg: ClawdbotConfig;
-  accountId: string;
-  senderOpenId: string;
+  sessionCtx: SessionPickerContext | undefined;
   entries: ModelCatalogEntry[];
 }): string | undefined {
-  const fromSession = resolveCurrentSessionModelId(params);
-  if (fromSession) return fromSession;
-  return findPrimaryModelEntry(params.entries)?.modelId;
+  if (!params.sessionCtx?.sessionEntry) return undefined;
+  return resolveCatalogModelIdFromSessionEntry({
+    cfg: params.cfg,
+    entry: params.sessionCtx.sessionEntry,
+    agentId: params.sessionCtx.agentId,
+    entries: params.entries,
+  });
 }
 
 async function sendModelPickerCard(params: {
@@ -402,7 +457,13 @@ async function sendModelPickerCard(params: {
   senderOpenId: string;
 }): Promise<void> {
   const accountScopedCfg = createAccountScopedConfig(params.cfg, params.accountId);
-  const catalog = await listModelCatalog(accountScopedCfg);
+  const catalogPromise = listModelCatalog(accountScopedCfg);
+  const sessionCtx = loadSessionPickerContext({
+    cfg: accountScopedCfg,
+    accountId: params.accountId,
+    senderOpenId: params.senderOpenId,
+  });
+  const catalog = await catalogPromise;
 
   if (catalog.entries.length === 0) {
     log.warn(
@@ -417,12 +478,12 @@ async function sendModelPickerCard(params: {
     return;
   }
 
-  const currentModelId = resolveDisplayedCurrentModelId({
+  const fromSession = resolveCurrentModelIdFromSessionContext({
     cfg: accountScopedCfg,
-    accountId: params.accountId,
-    senderOpenId: params.senderOpenId,
+    sessionCtx,
     entries: catalog.entries,
   });
+  const currentModelId = fromSession ?? findPrimaryModelEntry(catalog.entries)?.modelId;
 
   await sendCardFeishu({
     cfg: accountScopedCfg,
@@ -507,44 +568,20 @@ export function handleModelPickerAction(
 
   const accountScopedCfg = createAccountScopedConfig(cfg, accountId);
   const cachedCatalog = getCachedModelCatalog();
-  if (cachedCatalog?.entries.length && !findModelEntry(cachedCatalog.entries, modelId)) {
-    log.warn(`model picker rejected model_id account=${accountId} openId=${senderOpenId} modelId=${modelId}`);
-    return {
-      toast: {
-        type: 'error',
-        ...i18nToast(CARD_TEXTS.zh_cn.unknownModel, CARD_TEXTS.en_us.unknownModel),
-      },
-    };
-  }
-
-  const cachedEntry = findModelEntry(cachedCatalog?.entries ?? [], modelId);
-  const displayName =
-    cachedEntry?.name ?? findPrimaryModelEntry(cachedCatalog?.entries ?? [])?.name ?? CARD_TEXTS.zh_cn.unknown;
   const syntheticMessageId = `${openMessageId ?? senderOpenId}:set-model:${modelId}:${Date.now()}`;
   const chatId = openChatId ?? senderOpenId;
 
   setImmediate(() => {
-    void (async () => {
-      const catalog = await listModelCatalog(accountScopedCfg);
-      const entry = findModelEntry(catalog.entries, modelId!);
-      if (!entry) {
-        log.warn(
-          `model picker inject blocked unknown model_id account=${accountId} openId=${senderOpenId} modelId=${modelId}`,
-        );
-        return;
-      }
-
-      await dispatchSyntheticTextMessage({
-        cfg: accountScopedCfg,
-        accountId,
-        chatId,
-        senderOpenId: senderOpenId!,
-        text: formatModelCommand(entry.modelId),
-        syntheticMessageId,
-        replyToMessageId: openMessageId ?? syntheticMessageId,
-        chatType: 'p2p',
-      });
-    })().catch((err) => {
+    void dispatchSyntheticTextMessage({
+      cfg: accountScopedCfg,
+      accountId,
+      chatId,
+      senderOpenId: senderOpenId!,
+      text: formatModelCommand(modelId!),
+      syntheticMessageId,
+      replyToMessageId: openMessageId ?? syntheticMessageId,
+      chatType: 'p2p',
+    }).catch((err) => {
       log.error(
         `model picker inject failed account=${accountId} openId=${senderOpenId} modelId=${modelId}: ${String(err)}`,
       );
@@ -556,7 +593,7 @@ export function handleModelPickerAction(
   const response: Record<string, unknown> = {
     toast: {
       type: 'success',
-      ...i18nToast(CARD_TEXTS.zh_cn.switchedTo(displayName), CARD_TEXTS.en_us.switchedTo(displayName)),
+      ...i18nToast(CARD_TEXTS.zh_cn.switchedTo(modelId), CARD_TEXTS.en_us.switchedTo(modelId)),
     },
   };
   if (cachedCatalog?.entries.length) {

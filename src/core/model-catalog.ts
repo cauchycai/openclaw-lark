@@ -26,9 +26,11 @@ interface CatalogCache {
 }
 
 let catalogCache: CatalogCache | undefined;
+let catalogInflight: Promise<ListModelsResult> | undefined;
 
 export function clearModelCatalogCache(): void {
   catalogCache = undefined;
+  catalogInflight = undefined;
 }
 
 function getFreshCache(): CatalogCache | undefined {
@@ -52,13 +54,25 @@ export async function listModelCatalog(cfg?: ClawdbotConfig): Promise<ListModels
     return { entries: cached.entries, error: cached.error };
   }
 
-  const result = await listAvailableModelsFromOrchestrator(cfg);
-  catalogCache = {
-    entries: result.entries,
-    fetchedAt: Date.now(),
-    error: result.error,
-  };
-  return result;
+  if (catalogInflight) {
+    return catalogInflight;
+  }
+
+  catalogInflight = (async () => {
+    try {
+      const result = await listAvailableModelsFromOrchestrator(cfg);
+      catalogCache = {
+        entries: result.entries,
+        fetchedAt: Date.now(),
+        error: result.error,
+      };
+      return result;
+    } finally {
+      catalogInflight = undefined;
+    }
+  })();
+
+  return catalogInflight;
 }
 
 export function findModelEntry(
