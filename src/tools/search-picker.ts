@@ -4,14 +4,14 @@
  *
  * Feishu web-search provider picker (mirrors model-picker):
  * - application.bot.menu_v6 (event_key=turingclaw_pick_search) → send card
- * - card.action.trigger (action=set_search) → `openclaw config set tools.web.search.provider <id>`
+ * - card.action.trigger (action=set_search) → write `tools.web.search.provider`
  *
  * Unlike model-picker (which injects a `/model` chat command), there is no
  * `/search` chat command, so the action writes the single scoped config key
- * directly via the OpenClaw CLI. `tools.*` hot-applies under the default
- * gateway reload mode, so no restart is needed. The provider list is derived
- * from enabled search plugins in config; the current provider is read straight
- * from `tools.web.search.provider`.
+ * through the in-process OpenClaw runtime config API. `tools.*` hot-applies
+ * under the default gateway reload mode, so no restart is needed. The provider
+ * list is derived from enabled search plugins in config; the current provider
+ * is read straight from `tools.web.search.provider`.
  */
 
 import { execFile } from 'node:child_process';
@@ -21,6 +21,7 @@ import type { MonitorContext } from '../channel/types';
 import { createAccountScopedConfig } from '../core/accounts';
 import { resolveCardCallbackOperatorId } from '../core/card-action-operator';
 import { larkLogger } from '../core/lark-logger';
+import { tryGetLarkRuntime } from '../core/runtime-store';
 import { sendCardFeishu, sendMessageFeishu } from '../messaging/outbound/send';
 
 const log = larkLogger('tools/search-picker');
@@ -53,6 +54,16 @@ interface SearchProvider {
   /** plugins.entries key that must be enabled for this provider to be offered. */
   pluginKey?: string;
 }
+
+type SearchConfig = ClawdbotConfig & {
+  tools?: {
+    web?: {
+      search?: {
+        provider?: string;
+      };
+    };
+  };
+};
 
 const KNOWN_PROVIDERS: readonly SearchProvider[] = [
   { id: 'turing-baidu', label: { zh_cn: '百度搜索', en_us: 'Baidu Search' }, pluginKey: 'turing-baidu' },
@@ -129,12 +140,7 @@ interface CardActionPayload {
 function resolveMenuOperatorOpenId(payload: MenuV6EventPayload): string | undefined {
   const operator = payload.event?.operator ?? payload.operator;
   if (!operator) return undefined;
-  return (
-    operator.operator_id?.open_id ||
-    operator.open_id ||
-    operator.operator_id?.user_id ||
-    operator.user_id
-  );
+  return operator.operator_id?.open_id || operator.open_id || operator.operator_id?.user_id || operator.user_id;
 }
 
 function resolveMenuEventKey(payload: MenuV6EventPayload): string | undefined {
@@ -148,8 +154,7 @@ function resolveMenuEventId(data: unknown): string | undefined {
 
 /** The active provider is just the `tools.web.search.provider` config field. */
 export function resolveCurrentProviderId(cfg: ClawdbotConfig): string | undefined {
-  const value = (cfg as { tools?: { web?: { search?: { provider?: unknown } } } }).tools?.web?.search
-    ?.provider;
+  const value = (cfg as { tools?: { web?: { search?: { provider?: unknown } } } }).tools?.web?.search?.provider;
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
@@ -158,16 +163,12 @@ export function resolveCurrentProviderId(cfg: ClawdbotConfig): string | undefine
  * (a freshly-read provider id) is included even if it is not a known provider;
  * when omitted it falls back to the possibly-stale value in `cfg`.
  */
-export function listAvailableProviders(
-  cfg: ClawdbotConfig,
-  currentId?: string,
-): SearchProvider[] {
-  const entries =
-    ((cfg as { plugins?: { entries?: Record<string, { enabled?: boolean }> } }).plugins?.entries ??
-      {}) as Record<string, { enabled?: boolean }>;
-  const available = KNOWN_PROVIDERS.filter(
-    (p) => !p.pluginKey || entries[p.pluginKey]?.enabled === true,
-  ).map((p) => ({ ...p }));
+export function listAvailableProviders(cfg: ClawdbotConfig, currentId?: string): SearchProvider[] {
+  const entries = ((cfg as { plugins?: { entries?: Record<string, { enabled?: boolean }> } }).plugins?.entries ??
+    {}) as Record<string, { enabled?: boolean }>;
+  const available = KNOWN_PROVIDERS.filter((p) => !p.pluginKey || entries[p.pluginKey]?.enabled === true).map((p) => ({
+    ...p,
+  }));
 
   const current = currentId ?? resolveCurrentProviderId(cfg);
   if (current && !available.some((p) => p.id === current)) {
@@ -193,8 +194,8 @@ export function buildSearchPickerCard(params: {
   const zh = CARD_TEXTS.zh_cn;
   const en = CARD_TEXTS.en_us;
   const currentProvider = currentProviderId ? findProvider(providers, currentProviderId) : undefined;
-  const currentLabelZh = currentProvider?.label.zh_cn ?? (currentProviderId ?? zh.auto);
-  const currentLabelEn = currentProvider?.label.en_us ?? (currentProviderId ?? en.auto);
+  const currentLabelZh = currentProvider?.label.zh_cn ?? currentProviderId ?? zh.auto;
+  const currentLabelEn = currentProvider?.label.en_us ?? currentProviderId ?? en.auto;
 
   const buttons = providers.map((provider) => ({
     tag: 'button',
@@ -238,26 +239,48 @@ function buildSearchPickerErrorCard(): Record<string, unknown> {
 
 /** Write the single scoped config key. `tools.*` hot-applies (no restart). */
 async function applySearchProvider(provider: string): Promise<void> {
+  const runtime = tryGetLarkRuntime();
+  if (runtime?.config?.loadConfig && runtime.config.writeConfigFile) {
+    const live = runtime.config.loadConfig() as ClawdbotConfig;
+    if (live && typeof live === 'object' && Object.keys(live as Record<string, unknown>).length > 0) {
+      const next = structuredClone(live) as SearchConfig;
+      next.tools ??= {};
+      next.tools.web ??= {};
+      next.tools.web.search ??= {};
+      next.tools.web.search.provider = provider;
+      await runtime.config.writeConfigFile(next);
+      return;
+    }
+  }
+
+  // Compatibility fallback for tests or older hosts where the plugin runtime
+  // config API is not available.
   await execFileAsync('openclaw', ['config', 'set', 'tools.web.search.provider', provider], {
     timeout: 30_000,
   });
 }
 
 /**
- * Read the current provider freshly from disk via the CLI. `ctx.cfg` is the
- * snapshot captured when the WS monitor started and is NOT refreshed after a
- * `config set` + hot-reload, so reading it would show a stale provider when the
- * picker is reopened. `config get` reads the same on-disk config `config set`
- * wrote (prints the raw string value), so it always reflects the latest switch.
- * Returns undefined when unset (auto-detect) or on any read error.
+ * Read the current provider from the live runtime config first, with a CLI
+ * fallback for older hosts. Returns undefined when unset (auto-detect) or on
+ * any read error.
  */
 async function getCurrentProviderId(): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync(
-      'openclaw',
-      ['config', 'get', 'tools.web.search.provider'],
-      { timeout: 15_000 },
-    );
+    const runtime = tryGetLarkRuntime();
+    const live = runtime?.config?.loadConfig?.() as ClawdbotConfig | undefined;
+    if (live) {
+      const value = resolveCurrentProviderId(live);
+      if (value) return value;
+    }
+  } catch {
+    // Fall through to the CLI compatibility path below.
+  }
+
+  try {
+    const { stdout } = await execFileAsync('openclaw', ['config', 'get', 'tools.web.search.provider'], {
+      timeout: 15_000,
+    });
     const value = stdout.trim();
     return value || undefined;
   } catch {
@@ -271,8 +294,8 @@ async function sendSearchPickerCard(params: {
   senderOpenId: string;
 }): Promise<void> {
   const accountScopedCfg = createAccountScopedConfig(params.cfg, params.accountId);
-  // Read the current provider fresh from disk so a reopened picker reflects the
-  // latest switch (ctx.cfg is a stale startup snapshot — see getCurrentProviderId).
+  // Read the current provider from the live runtime snapshot so a reopened
+  // picker reflects the latest switch.
   const currentId = (await getCurrentProviderId()) ?? resolveCurrentProviderId(accountScopedCfg);
   const providers = listAvailableProviders(accountScopedCfg, currentId);
 
@@ -329,11 +352,11 @@ export async function handleMenuPickSearchEvent(ctx: MonitorContext, data: unkno
   }
 }
 
-export function handleSearchPickerAction(
+export async function handleSearchPickerAction(
   data: unknown,
   cfg: ClawdbotConfig,
   accountId: string,
-): unknown | undefined {
+): Promise<unknown | undefined> {
   let action: string | undefined;
   let provider: string | undefined;
   let senderOpenId: string | undefined;
@@ -342,9 +365,7 @@ export function handleSearchPickerAction(
     const event = data as CardActionPayload;
     const rawValue = event.action?.value;
     const value =
-      typeof rawValue === 'string'
-        ? (JSON.parse(rawValue) as { action?: string; provider?: string })
-        : rawValue;
+      typeof rawValue === 'string' ? (JSON.parse(rawValue) as { action?: string; provider?: string }) : rawValue;
     action = value?.action;
     provider = typeof value?.provider === 'string' ? value.provider.trim() : undefined;
     senderOpenId = resolveCardCallbackOperatorId(event.operator);
@@ -367,26 +388,25 @@ export function handleSearchPickerAction(
     };
   }
 
-  // Apply after returning so the card.action.trigger ack goes out within 3s.
-  setImmediate(() => {
-    void applySearchProvider(target.id)
-      .then(() => {
-        log.info(`search picker set provider account=${accountId} openId=${senderOpenId} provider=${target.id}`);
-      })
-      .catch((err) => {
-        log.error(
-          `search picker apply failed account=${accountId} openId=${senderOpenId} provider=${target.id}: ${String(err)}`,
-        );
-      });
-  });
+  try {
+    await applySearchProvider(target.id);
+    log.info(`search picker set provider account=${accountId} openId=${senderOpenId} provider=${target.id}`);
+  } catch (err) {
+    log.error(
+      `search picker apply failed account=${accountId} openId=${senderOpenId} provider=${target.id}: ${String(err)}`,
+    );
+    return {
+      toast: {
+        type: 'error',
+        ...i18nToast(CARD_TEXTS.zh_cn.switchFailed, CARD_TEXTS.en_us.switchFailed),
+      },
+    };
+  }
 
   return {
     toast: {
       type: 'success',
-      ...i18nToast(
-        CARD_TEXTS.zh_cn.switchedTo(target.label.zh_cn),
-        CARD_TEXTS.en_us.switchedTo(target.label.en_us),
-      ),
+      ...i18nToast(CARD_TEXTS.zh_cn.switchedTo(target.label.zh_cn), CARD_TEXTS.en_us.switchedTo(target.label.en_us)),
     },
     card: {
       type: 'raw',
