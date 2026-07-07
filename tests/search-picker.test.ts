@@ -1,13 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 
+const execFileMock = vi.hoisted(() => {
+  const fn = vi.fn();
+  Object.defineProperty(fn, Symbol.for('nodejs.util.promisify.custom'), {
+    value: vi.fn((cmd: string, args: string[], opts: Record<string, unknown>) => fn(cmd, args, opts)),
+  });
+  return fn;
+});
+
 const runtimeState = vi.hoisted(() => ({
   current: null as {
-    config: {
+    config?: {
       loadConfig: ReturnType<typeof vi.fn>;
       writeConfigFile: ReturnType<typeof vi.fn>;
     };
+    gateway?: {
+      request?: ReturnType<typeof vi.fn>;
+      call?: ReturnType<typeof vi.fn>;
+    };
   } | null,
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile: execFileMock,
 }));
 
 vi.mock('../src/core/lark-logger', () => ({
@@ -77,9 +93,111 @@ describe('buildSearchPickerCard', () => {
 describe('handleSearchPickerAction', () => {
   beforeEach(() => {
     runtimeState.current = null;
+    execFileMock.mockReset();
+    execFileMock.mockRejectedValue(new Error('gateway unavailable'));
   });
 
-  it('writes the selected provider through the live runtime config before returning success', async () => {
+  it('applies the selected provider through Gateway config.patch before returning success', async () => {
+    const gatewayRequest = vi.fn(async (method: string) => {
+      if (method === 'config.get') return { hash: 'hash-1', config: createSearchConfig('firecrawl') };
+      if (method === 'config.patch') return { ok: true };
+      throw new Error(`unexpected method ${method}`);
+    });
+    runtimeState.current = {
+      gateway: {
+        request: gatewayRequest,
+      },
+    };
+
+    const result = await handleSearchPickerAction(
+      createActionPayload('turing-baidu'),
+      createSearchConfig(),
+      'feishu-a1',
+    );
+
+    expect(gatewayRequest).toHaveBeenCalledWith('config.get', {});
+    expect(gatewayRequest).toHaveBeenCalledWith('config.patch', {
+      raw: JSON.stringify({ tools: { web: { search: { provider: 'turing-baidu' } } } }),
+      baseHash: 'hash-1',
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to Baidu Search',
+      },
+    });
+  });
+
+  it('can apply the selected provider through Gateway CLI config.patch', async () => {
+    execFileMock
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ hash: 'hash-cli', config: createSearchConfig('firecrawl') }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true }) });
+
+    const result = await handleSearchPickerAction(
+      createActionPayload('turing-baidu'),
+      createSearchConfig(),
+      'feishu-a1',
+    );
+
+    expect(execFileMock).toHaveBeenNthCalledWith(
+      1,
+      'openclaw',
+      ['gateway', 'call', 'config.get', '--params', '{}', '--json'],
+      { timeout: 30_000 },
+    );
+    expect(execFileMock).toHaveBeenNthCalledWith(
+      2,
+      'openclaw',
+      [
+        'gateway',
+        'call',
+        'config.patch',
+        '--params',
+        JSON.stringify({
+          raw: JSON.stringify({ tools: { web: { search: { provider: 'turing-baidu' } } } }),
+          baseHash: 'hash-cli',
+        }),
+        '--json',
+      ],
+      { timeout: 30_000 },
+    );
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to Baidu Search',
+      },
+    });
+  });
+
+  it('reports Gateway config.patch noop as runtime-unconfirmed', async () => {
+    const gatewayRequest = vi.fn(async (method: string) => {
+      if (method === 'config.get') return { hash: 'hash-1', config: createSearchConfig('turing-baidu') };
+      if (method === 'config.patch') return { ok: true, noop: true };
+      throw new Error(`unexpected method ${method}`);
+    });
+    runtimeState.current = {
+      gateway: {
+        request: gatewayRequest,
+      },
+    };
+
+    const result = await handleSearchPickerAction(
+      createActionPayload('turing-baidu'),
+      createSearchConfig('turing-baidu'),
+      'feishu-a1',
+    );
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'warning',
+        content:
+          'Saved Baidu Search, but the running Gateway did not confirm it was applied. Use Gateway config.patch or upgrade OpenClaw.',
+      },
+    });
+  });
+
+  it('falls back to live runtime config writes but reports runtime as unconfirmed', async () => {
     let liveConfig = createSearchConfig('firecrawl');
     const writeConfigFile = vi.fn(async (next: ClawdbotConfig) => {
       liveConfig = next;
@@ -99,8 +217,9 @@ describe('handleSearchPickerAction', () => {
     );
     expect(result).toMatchObject({
       toast: {
-        type: 'success',
-        content: 'Switched to Baidu Search',
+        type: 'warning',
+        content:
+          'Saved Baidu Search, but the running Gateway did not confirm it was applied. Use Gateway config.patch or upgrade OpenClaw.',
       },
     });
   });

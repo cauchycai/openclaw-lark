@@ -8,10 +8,9 @@
  *
  * Unlike model-picker (which injects a `/model` chat command), there is no
  * `/search` chat command, so the action writes the single scoped config key
- * through the in-process OpenClaw runtime config API. `tools.*` hot-applies
- * under the default gateway reload mode, so no restart is needed. The provider
- * list is derived from enabled search plugins in config; the current provider
- * is read straight from `tools.web.search.provider`.
+ * through the Gateway control plane when available. Older OpenClaw builds can
+ * classify `tools.*` writes as noop reloads, so plugin-local file writes are
+ * treated only as a compatibility fallback and not as runtime-applied changes.
  */
 
 import { execFile } from 'node:child_process';
@@ -65,6 +64,15 @@ type SearchConfig = ClawdbotConfig & {
   };
 };
 
+interface ApplySearchProviderResult {
+  fileUpdated: boolean;
+  runtimeApplied: boolean;
+  source: 'gateway-runtime' | 'gateway-cli' | 'runtime-config' | 'config-cli';
+  reason?: string;
+}
+
+type GatewayRequest = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+
 const KNOWN_PROVIDERS: readonly SearchProvider[] = [
   { id: 'turing-baidu', label: { zh_cn: '百度搜索', en_us: 'Baidu Search' }, pluginKey: 'turing-baidu' },
   { id: 'firecrawl', label: { zh_cn: '海外搜索', en_us: 'Global Search' }, pluginKey: 'firecrawl' },
@@ -80,6 +88,8 @@ const CARD_TEXTS = {
     emptyBody: '当前没有可用的搜索源插件，请联系管理员。',
     switchFailed: '切换搜索源失败，请稍后再试或联系管理员。',
     switchedTo: (label: string) => `已切换至 ${label}`,
+    savedRuntimeUnconfirmed: (label: string) =>
+      `已写入 ${label}，但运行时未确认生效；请使用 Gateway config.patch 或升级 OpenClaw。`,
     unknownProvider: '未知搜索源，请重新打开选择卡片。',
   },
   en_us: {
@@ -91,6 +101,8 @@ const CARD_TEXTS = {
     emptyBody: 'No search provider plugins are enabled. Contact your admin.',
     switchFailed: 'Failed to switch the search provider. Try again later or contact your admin.',
     switchedTo: (label: string) => `Switched to ${label}`,
+    savedRuntimeUnconfirmed: (label: string) =>
+      `Saved ${label}, but the running Gateway did not confirm it was applied. Use Gateway config.patch or upgrade OpenClaw.`,
     unknownProvider: 'Unknown search provider. Please reopen the picker.',
   },
 } as const;
@@ -237,8 +249,98 @@ function buildSearchPickerErrorCard(): Record<string, unknown> {
   };
 }
 
-/** Write the single scoped config key. `tools.*` hot-applies (no restart). */
-async function applySearchProvider(provider: string): Promise<void> {
+function buildSearchProviderPatch(provider: string): Record<string, unknown> {
+  return { tools: { web: { search: { provider } } } };
+}
+
+function getRuntimeGatewayRequest(): GatewayRequest | undefined {
+  const runtime = tryGetLarkRuntime();
+  const gateway = (runtime as unknown as { gateway?: { request?: GatewayRequest; call?: GatewayRequest } } | null)
+    ?.gateway;
+  return gateway?.request ?? gateway?.call;
+}
+
+function readConfigBaseHash(snapshot: unknown): string | undefined {
+  if (!snapshot || typeof snapshot !== 'object') return undefined;
+  const hash =
+    (snapshot as { hash?: unknown; baseHash?: unknown }).hash ?? (snapshot as { baseHash?: unknown }).baseHash;
+  return typeof hash === 'string' && hash.trim() ? hash.trim() : undefined;
+}
+
+function buildGatewayPatchResult(
+  source: ApplySearchProviderResult['source'],
+  patchResult: unknown,
+): ApplySearchProviderResult {
+  const noop = Boolean(patchResult && typeof patchResult === 'object' && (patchResult as { noop?: unknown }).noop);
+  return {
+    fileUpdated: true,
+    runtimeApplied: !noop,
+    source,
+    reason: noop ? 'Gateway config.patch returned noop; runtime snapshot refresh was not confirmed' : undefined,
+  };
+}
+
+async function applySearchProviderViaGatewayRequest(provider: string): Promise<ApplySearchProviderResult | undefined> {
+  const request = getRuntimeGatewayRequest();
+  if (!request) return undefined;
+
+  const snapshot = await request('config.get', {});
+  const baseHash = readConfigBaseHash(snapshot);
+  if (!baseHash) throw new Error('config.get returned no base hash');
+  const patchResult = await request('config.patch', {
+    raw: JSON.stringify(buildSearchProviderPatch(provider)),
+    baseHash,
+  });
+  return buildGatewayPatchResult('gateway-runtime', patchResult);
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start < 0 || end <= start) throw new Error('Gateway CLI returned non-JSON output');
+    const parsed = JSON.parse(trimmed.slice(start, end + 1));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  }
+}
+
+async function runOpenClaw(args: string[], timeout: number): Promise<{ stdout: string; stderr: string }> {
+  const binary = process.env.OPENCLAW_BIN?.trim() || 'openclaw';
+  const result = (await execFileAsync(binary, args, { timeout })) as {
+    stdout?: string | Buffer;
+    stderr?: string | Buffer;
+  };
+  return {
+    stdout: result.stdout == null ? '' : String(result.stdout),
+    stderr: result.stderr == null ? '' : String(result.stderr),
+  };
+}
+
+async function callGatewayCli(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const { stdout } = await runOpenClaw(
+    ['gateway', 'call', method, '--params', JSON.stringify(params), '--json'],
+    30_000,
+  );
+  return parseJsonObject(stdout);
+}
+
+async function applySearchProviderViaGatewayCli(provider: string): Promise<ApplySearchProviderResult> {
+  const snapshot = await callGatewayCli('config.get', {});
+  const baseHash = readConfigBaseHash(snapshot);
+  if (!baseHash) throw new Error('config.get returned no base hash');
+  const patchResult = await callGatewayCli('config.patch', {
+    raw: JSON.stringify(buildSearchProviderPatch(provider)),
+    baseHash,
+  });
+  return buildGatewayPatchResult('gateway-cli', patchResult);
+}
+
+async function writeSearchProviderConfigFile(provider: string, reason?: string): Promise<ApplySearchProviderResult> {
   const runtime = tryGetLarkRuntime();
   if (runtime?.config?.loadConfig && runtime.config.writeConfigFile) {
     const live = runtime.config.loadConfig() as ClawdbotConfig;
@@ -249,15 +351,48 @@ async function applySearchProvider(provider: string): Promise<void> {
       next.tools.web.search ??= {};
       next.tools.web.search.provider = provider;
       await runtime.config.writeConfigFile(next);
-      return;
+      return {
+        fileUpdated: true,
+        runtimeApplied: false,
+        source: 'runtime-config',
+        reason,
+      };
     }
   }
 
   // Compatibility fallback for tests or older hosts where the plugin runtime
   // config API is not available.
-  await execFileAsync('openclaw', ['config', 'set', 'tools.web.search.provider', provider], {
-    timeout: 30_000,
-  });
+  await runOpenClaw(['config', 'set', 'tools.web.search.provider', provider], 30_000);
+  return {
+    fileUpdated: true,
+    runtimeApplied: false,
+    source: 'config-cli',
+    reason,
+  };
+}
+
+async function applySearchProvider(provider: string): Promise<ApplySearchProviderResult> {
+  const failures: string[] = [];
+
+  try {
+    const result = await applySearchProviderViaGatewayRequest(provider);
+    if (result) return result;
+  } catch (err) {
+    failures.push(`runtime gateway request failed: ${String(err)}`);
+  }
+
+  try {
+    return await applySearchProviderViaGatewayCli(provider);
+  } catch (err) {
+    failures.push(`gateway CLI config.patch failed: ${String(err)}`);
+  }
+
+  return await writeSearchProviderConfigFile(
+    provider,
+    failures.length > 0
+      ? `${failures.join('; ')}; file write does not guarantee Gateway active runtime snapshot refresh`
+      : 'Gateway RPC config.patch unavailable; file write does not guarantee Gateway active runtime snapshot refresh',
+  );
 }
 
 /**
@@ -278,9 +413,7 @@ async function getCurrentProviderId(): Promise<string | undefined> {
   }
 
   try {
-    const { stdout } = await execFileAsync('openclaw', ['config', 'get', 'tools.web.search.provider'], {
-      timeout: 15_000,
-    });
+    const { stdout } = await runOpenClaw(['config', 'get', 'tools.web.search.provider'], 15_000);
     const value = stdout.trim();
     return value || undefined;
   } catch {
@@ -388,9 +521,12 @@ export async function handleSearchPickerAction(
     };
   }
 
+  let applyResult: ApplySearchProviderResult;
   try {
-    await applySearchProvider(target.id);
-    log.info(`search picker set provider account=${accountId} openId=${senderOpenId} provider=${target.id}`);
+    applyResult = await applySearchProvider(target.id);
+    log.info(
+      `search picker set provider account=${accountId} openId=${senderOpenId} provider=${target.id} source=${applyResult.source} fileUpdated=${applyResult.fileUpdated} runtimeApplied=${applyResult.runtimeApplied}${applyResult.reason ? ` reason=${applyResult.reason}` : ''}`,
+    );
   } catch (err) {
     log.error(
       `search picker apply failed account=${accountId} openId=${senderOpenId} provider=${target.id}: ${String(err)}`,
@@ -403,10 +539,17 @@ export async function handleSearchPickerAction(
     };
   }
 
+  const zhToast = applyResult.runtimeApplied
+    ? CARD_TEXTS.zh_cn.switchedTo(target.label.zh_cn)
+    : CARD_TEXTS.zh_cn.savedRuntimeUnconfirmed(target.label.zh_cn);
+  const enToast = applyResult.runtimeApplied
+    ? CARD_TEXTS.en_us.switchedTo(target.label.en_us)
+    : CARD_TEXTS.en_us.savedRuntimeUnconfirmed(target.label.en_us);
+
   return {
     toast: {
-      type: 'success',
-      ...i18nToast(CARD_TEXTS.zh_cn.switchedTo(target.label.zh_cn), CARD_TEXTS.en_us.switchedTo(target.label.en_us)),
+      type: applyResult.runtimeApplied ? 'success' : 'warning',
+      ...i18nToast(zhToast, enToast),
     },
     card: {
       type: 'raw',
