@@ -5,6 +5,7 @@
  * Feishu dynamic model picker:
  * - application.bot.menu_v6 (event_key=turingclaw_pick_model) → send card
  * - card.action.trigger (action=set_model) → inject /model ref
+ * - card.action.trigger (action=set_thinking) → inject /think level
  */
 
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
@@ -34,6 +35,7 @@ const log = larkLogger('tools/model-picker');
 
 export const MENU_EVENT_KEY_PICK_MODEL = 'turingclaw_pick_model';
 export const ACTION_SET_MODEL = 'set_model';
+export const ACTION_SET_THINKING = 'set_thinking';
 
 type Locale = 'zh_cn' | 'en_us';
 
@@ -45,25 +47,37 @@ const I18N_CONFIG = {
 const CARD_TEXTS = {
   zh_cn: {
     title: '选择模型',
-    current: (label: string) => `当前：${label}`,
+    current: (label: string, thinking: string) => `当前：${label} · 思考：${thinking}`,
     unknown: '未知',
     hint: '点击按钮切换模型',
+    thinkingHint: '思考强度',
     errorTitle: '无法加载模型列表',
     emptyBody: '暂无可用模型，请联系管理员，或直接在对话中使用 `/model` 命令。',
     loadFailed: '暂时无法加载模型列表，请稍后再试或使用 `/model` 命令切换。',
     switchedTo: (label: string) => `已切换至 ${label}`,
+    thinkingSetTo: (label: string) => `思考强度已设为 ${label}`,
   },
   en_us: {
     title: 'Select Model',
-    current: (label: string) => `Current: ${label}`,
+    current: (label: string, thinking: string) => `Current: ${label} · Thinking: ${thinking}`,
     unknown: 'Unknown',
     hint: 'Tap a button to switch models',
+    thinkingHint: 'Thinking level',
     errorTitle: 'Unable to load models',
     emptyBody: 'No models are available. Contact your admin, or use `/model` in chat.',
     loadFailed: 'Unable to load the model list. Try again later or use `/model` in chat.',
     switchedTo: (label: string) => `Switched to ${label}`,
+    thinkingSetTo: (label: string) => `Thinking set to ${label}`,
   },
 } as const;
+
+const THINKING_LEVELS = [
+  { value: 'off', zh: '快速回答', en: 'Quick answer' },
+  { value: 'low', zh: '轻度思考', en: 'Light thinking' },
+  { value: 'high', zh: '深度思考', en: 'Deep thinking' },
+] as const;
+
+type ThinkingLevel = (typeof THINKING_LEVELS)[number]['value'];
 
 function i18nContent(zh: string, en: string): Record<Locale, string> {
   return { zh_cn: zh, en_us: en };
@@ -75,6 +89,21 @@ function i18nPlainText(zh: string, en: string) {
 
 function i18nMarkdown(zh: string, en: string) {
   return { tag: 'markdown' as const, content: en, i18n_content: i18nContent(zh, en) };
+}
+
+function buttonRow(buttons: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_spacing: '0px',
+    horizontal_align: 'left',
+    background_style: 'default',
+    columns: buttons.map((button) => ({
+      tag: 'column',
+      width: 'auto',
+      elements: [button],
+    })),
+  };
 }
 
 /** Feishu card callback toast i18n (see card-callback-communication). */
@@ -106,7 +135,7 @@ interface CardActionPayload {
   open_message_id?: string;
   context?: { open_chat_id?: string; open_message_id?: string };
   action?: {
-    value?: { action?: string; model_id?: string } | string;
+    value?: { action?: string; model_id?: string; thinking_level?: string } | string;
   };
 }
 
@@ -136,6 +165,23 @@ function formatButtonLabel(entry: ModelCatalogEntry, isCurrent: boolean): string
 
 function formatModelCommand(modelId: string): string {
   return `/model ${MODEL_PROVIDER_ID}/${modelId.trim()}`;
+}
+
+function formatThinkingCommand(level: string): string {
+  return `/think ${normalizeThinkingLevel(level) ?? 'off'}`;
+}
+
+function normalizeThinkingLevel(value: unknown): ThinkingLevel | undefined {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (raw === 'none' || raw === 'false' || raw === 'disabled') return 'off';
+  if (THINKING_LEVELS.some((level) => level.value === raw)) return raw as ThinkingLevel;
+  return undefined;
+}
+
+function thinkingLabel(level: string | undefined, locale: Locale): string {
+  const normalized = normalizeThinkingLevel(level) ?? 'off';
+  const entry = THINKING_LEVELS.find((item) => item.value === normalized);
+  return locale === 'zh_cn' ? entry?.zh ?? '快速回答' : entry?.en ?? 'Quick answer';
 }
 
 /** Model id namespace stored mistakenly as providerOverride in older sessions. */
@@ -287,11 +333,13 @@ export function resolveCatalogModelIdFromSessionEntry(params: {
 export function buildModelPickerCard(params: {
   entries: ModelCatalogEntry[];
   currentModelId?: string;
+  currentThinkingLevel?: string;
 }): Record<string, unknown> {
-  const { entries, currentModelId } = params;
+  const { entries, currentModelId, currentThinkingLevel } = params;
   const zh = CARD_TEXTS.zh_cn;
   const en = CARD_TEXTS.en_us;
   const effectiveCurrentModelId = currentModelId ?? findPrimaryModelEntry(entries)?.modelId;
+  const effectiveThinkingLevel = normalizeThinkingLevel(currentThinkingLevel) ?? 'off';
   const currentEntry = effectiveCurrentModelId
     ? findModelEntry(entries, effectiveCurrentModelId)
     : undefined;
@@ -312,16 +360,41 @@ export function buildModelPickerCard(params: {
     },
   }));
 
+  const thinkingButtons = THINKING_LEVELS.map((level) => {
+    const isCurrent = effectiveThinkingLevel === level.value;
+    return {
+      tag: 'button',
+      type: isCurrent ? 'primary' : 'default',
+      text: i18nPlainText(
+        isCurrent ? `✅ ${level.zh}` : level.zh,
+        isCurrent ? `✅ ${level.en}` : level.en,
+      ),
+      value: {
+        action: ACTION_SET_THINKING,
+        thinking_level: level.value,
+        model_id: effectiveCurrentModelId,
+      },
+    };
+  });
+
   return {
     schema: '2.0',
     config: { wide_screen_mode: true, ...I18N_CONFIG },
     header: {
       title: i18nPlainText(zh.title, en.title),
-      subtitle: i18nPlainText(zh.current(currentName), en.current(currentNameEn)),
+      subtitle: i18nPlainText(
+        zh.current(currentName, thinkingLabel(effectiveThinkingLevel, 'zh_cn')),
+        en.current(currentNameEn, thinkingLabel(effectiveThinkingLevel, 'en_us')),
+      ),
       template: 'blue',
     },
     body: {
-      elements: [i18nMarkdown(zh.hint, en.hint), ...buttons],
+      elements: [
+        i18nMarkdown(zh.hint, en.hint),
+        ...buttons,
+        i18nMarkdown(zh.thinkingHint, en.thinkingHint),
+        buttonRow(thinkingButtons),
+      ],
     },
   };
 }
@@ -451,6 +524,12 @@ function resolveCurrentModelIdFromSessionContext(params: {
   });
 }
 
+function resolveCurrentThinkingLevelFromSessionContext(
+  sessionCtx: SessionPickerContext | undefined,
+): ThinkingLevel | undefined {
+  return normalizeThinkingLevel(sessionCtx?.sessionEntry?.thinkingLevel);
+}
+
 async function sendModelPickerCard(params: {
   cfg: ClawdbotConfig;
   accountId: string;
@@ -484,11 +563,12 @@ async function sendModelPickerCard(params: {
     entries: catalog.entries,
   });
   const currentModelId = fromSession ?? findPrimaryModelEntry(catalog.entries)?.modelId;
+  const currentThinkingLevel = resolveCurrentThinkingLevelFromSessionContext(sessionCtx);
 
   await sendCardFeishu({
     cfg: accountScopedCfg,
     to: params.senderOpenId,
-    card: buildModelPickerCard({ entries: catalog.entries, currentModelId }),
+    card: buildModelPickerCard({ entries: catalog.entries, currentModelId, currentThinkingLevel }),
     accountId: params.accountId,
   });
 }
@@ -544,6 +624,7 @@ export function handleModelPickerAction(
 ): unknown | undefined {
   let action: string | undefined;
   let modelId: string | undefined;
+  let thinkingLevel: ThinkingLevel | undefined;
   let senderOpenId: string | undefined;
   let openChatId: string | undefined;
   let openMessageId: string | undefined;
@@ -553,10 +634,11 @@ export function handleModelPickerAction(
     const rawValue = event.action?.value;
     const value =
       typeof rawValue === 'string'
-        ? (JSON.parse(rawValue) as { action?: string; model_id?: string })
+        ? (JSON.parse(rawValue) as { action?: string; model_id?: string; thinking_level?: string })
         : rawValue;
     action = value?.action;
     modelId = typeof value?.model_id === 'string' ? value.model_id.trim() : undefined;
+    thinkingLevel = normalizeThinkingLevel(value?.thinking_level);
     senderOpenId = resolveCardCallbackOperatorId(event.operator);
     openChatId = event.open_chat_id ?? event.context?.open_chat_id;
     openMessageId = event.open_message_id ?? event.context?.open_message_id;
@@ -564,12 +646,21 @@ export function handleModelPickerAction(
     return undefined;
   }
 
-  if (action !== ACTION_SET_MODEL || !modelId || !senderOpenId) return undefined;
+  if (
+    !senderOpenId ||
+    (action === ACTION_SET_MODEL && !modelId) ||
+    (action === ACTION_SET_THINKING && !thinkingLevel) ||
+    (action !== ACTION_SET_MODEL && action !== ACTION_SET_THINKING)
+  ) {
+    return undefined;
+  }
 
   const accountScopedCfg = createAccountScopedConfig(cfg, accountId);
   const cachedCatalog = getCachedModelCatalog();
-  const syntheticMessageId = `${openMessageId ?? senderOpenId}:set-model:${modelId}:${Date.now()}`;
+  const syntheticMessageId = `${openMessageId ?? senderOpenId}:${action}:${modelId ?? thinkingLevel}:${Date.now()}`;
   const chatId = openChatId ?? senderOpenId;
+  const syntheticText =
+    action === ACTION_SET_MODEL ? formatModelCommand(modelId!) : formatThinkingCommand(thinkingLevel!);
 
   setImmediate(() => {
     void dispatchSyntheticTextMessage({
@@ -577,23 +668,50 @@ export function handleModelPickerAction(
       accountId,
       chatId,
       senderOpenId: senderOpenId!,
-      text: formatModelCommand(modelId!),
+      text: syntheticText,
       syntheticMessageId,
       replyToMessageId: openMessageId ?? syntheticMessageId,
       chatType: 'p2p',
     }).catch((err) => {
       log.error(
-        `model picker inject failed account=${accountId} openId=${senderOpenId} modelId=${modelId}: ${String(err)}`,
+        `model picker inject failed account=${accountId} openId=${senderOpenId} action=${action} modelId=${modelId} thinkingLevel=${thinkingLevel}: ${String(err)}`,
       );
     });
   });
 
-  log.info(`model picker set_model account=${accountId} openId=${senderOpenId} modelId=${modelId}`);
+  log.info(
+    `model picker action account=${accountId} openId=${senderOpenId} action=${action} modelId=${modelId} thinkingLevel=${thinkingLevel}`,
+  );
+
+  const sessionCtx = cachedCatalog?.entries.length
+    ? loadSessionPickerContext({ cfg: accountScopedCfg, accountId, senderOpenId })
+    : undefined;
+  const currentModelId =
+    action === ACTION_SET_MODEL
+      ? modelId
+      : modelId
+        ? modelId
+      : cachedCatalog?.entries.length
+        ? resolveCurrentModelIdFromSessionContext({
+            cfg: accountScopedCfg,
+            sessionCtx,
+            entries: cachedCatalog.entries,
+          }) ?? findPrimaryModelEntry(cachedCatalog.entries)?.modelId
+        : undefined;
+  const currentThinkingLevel =
+    action === ACTION_SET_THINKING
+      ? thinkingLevel
+      : resolveCurrentThinkingLevelFromSessionContext(sessionCtx);
 
   const response: Record<string, unknown> = {
     toast: {
       type: 'success',
-      ...i18nToast(CARD_TEXTS.zh_cn.switchedTo(modelId), CARD_TEXTS.en_us.switchedTo(modelId)),
+      ...(action === ACTION_SET_MODEL
+        ? i18nToast(CARD_TEXTS.zh_cn.switchedTo(modelId!), CARD_TEXTS.en_us.switchedTo(modelId!))
+        : i18nToast(
+            CARD_TEXTS.zh_cn.thinkingSetTo(thinkingLabel(thinkingLevel, 'zh_cn')),
+            CARD_TEXTS.en_us.thinkingSetTo(thinkingLabel(thinkingLevel, 'en_us')),
+          )),
     },
   };
   if (cachedCatalog?.entries.length) {
@@ -601,7 +719,8 @@ export function handleModelPickerAction(
       type: 'raw',
       data: buildModelPickerCard({
         entries: cachedCatalog.entries,
-        currentModelId: modelId,
+        currentModelId,
+        currentThinkingLevel,
       }),
     };
   }
