@@ -11,6 +11,7 @@
 
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 import { buildConvertContextFromItem, convertMessageContent } from '../converters/content-converter';
+import type { ResourceDescriptor } from '../types';
 import { LarkClient } from '../../core/lark-client';
 import { larkLogger } from '../../core/lark-logger';
 
@@ -41,6 +42,8 @@ export interface FeishuMessageInfo {
   senderType?: string;
   /** The parsed text / content of the message. */
   content: string;
+  /** Resource descriptors extracted from the message content. */
+  resources: ResourceDescriptor[];
   /** Feishu content type indicator (text, post, image, interactive, ...). */
   contentType: string;
   /** Unix-millisecond timestamp of when the message was created. */
@@ -157,7 +160,7 @@ async function parseMessageItem(
     fetchSubMessages: expandCtx?.fetchSubMessages,
     batchResolveNames: expandCtx?.batchResolveNames,
   };
-  const { content } = await convertMessageContent(rawContent, msgType, ctx);
+  const { content, resources } = await convertMessageContent(rawContent, msgType, ctx);
 
   const senderId: string | undefined = msg.sender?.id ?? undefined;
   const senderType: string | undefined = msg.sender?.sender_type ?? undefined;
@@ -171,6 +174,7 @@ async function parseMessageItem(
     senderName,
     senderType,
     content,
+    resources,
     contentType: msgType,
     createTime: msg.create_time ? parseInt(String(msg.create_time), 10) : undefined,
     threadId: msg.thread_id || undefined,

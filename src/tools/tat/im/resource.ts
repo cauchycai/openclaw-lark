@@ -18,6 +18,7 @@ import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
 import { buildRandomTempFilePath } from 'openclaw/plugin-sdk/temp-path';
 import { Type } from '@sinclair/typebox';
 import { StringEnum, createToolContext, formatLarkError, json, registerTool } from '../../oapi/helpers';
+import { handleOversizeResourceDownload } from '../../im-resource-oversize';
 
 // ===========================================================================
 // Shared constants
@@ -116,6 +117,9 @@ const FeishuImBotImageSchema = Type.Object({
   file_key: Type.String({
     description: '资源 Key，图片消息的 image_key（img_xxx）或文件消息的 file_key（file_xxx）',
   }),
+  file_name: Type.Optional(Type.String({
+    description: '原始文件名（可选）。如果上下文里的 <file/> 标签带 name，请传入，便于提示卡展示。',
+  })),
   type: StringEnum(['image', 'file'], {
     description: '资源类型：image（图片消息中的图片）、file（文件/音频/视频消息中的文件）',
   }),
@@ -124,11 +128,13 @@ const FeishuImBotImageSchema = Type.Object({
 interface FeishuImBotImageParams {
   message_id: string;
   file_key: string;
+  file_name?: string;
   type: 'image' | 'file';
 }
 
 export function registerFeishuImBotImageTool(api: OpenClawPluginApi): boolean {
   if (!api.config) return false;
+  const cfg = api.config;
 
   const { getClient, log } = createToolContext(api, 'feishu_im_bot_image');
 
@@ -176,6 +182,20 @@ export function registerFeishuImBotImageTool(api: OpenClawPluginApi): boolean {
             saved_path: savedPath,
           });
         } catch (err) {
+          const oversize = await handleOversizeResourceDownload({
+            cfg,
+            err,
+            messageId: p.message_id,
+            fileKey: p.file_key,
+            fileName: p.file_name,
+            type: p.type,
+            log: (msg) => log.warn(String(msg)),
+          });
+          if (oversize) {
+            log.warn(`download: resource exceeds Feishu 100MB IM cap`);
+            return json(oversize);
+          }
+
           log.error(`Error: ${formatLarkError(err)}`);
           return json({ error: formatLarkError(err) });
         }

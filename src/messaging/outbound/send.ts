@@ -424,6 +424,7 @@ export function buildI18nMarkdownCard(i18nTexts: Record<string, string>): Record
     schema: '2.0',
     config: {
       wide_screen_mode: true,
+      locales,
     },
     body: {
       elements: [

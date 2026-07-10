@@ -57,7 +57,13 @@
   "channelConfigs": {
     "feishu": {
       "schema": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "mediaMaxMb": {
+            "type": "number",
+            "description": "Maximum size (MB) of an inbound attachment the bot will download and save. Defaults to 512. Note: Feishu's IM resource API still hard-caps downloads at 100MB; larger files trigger the inbound large-file guidance card."
+          }
+        }
       }
     }
   }

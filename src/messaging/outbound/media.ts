@@ -93,6 +93,90 @@ function extractHttpStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * Feishu error code returned when an IM message resource exceeds the
+ * 100MB download cap of `im.messageResource.get`.
+ * @see https://open.feishu.cn/document/server-docs/im-v1/message/get-2
+ */
+const OVERSIZE_RESOURCE_ERR_CODE = 234037;
+
+/**
+ * Throw a tagged error when an IM message-resource response carries a non-zero
+ * business error code. Some SDK versions surface these as `{ code, msg }`
+ * response objects instead of throwing, so normalize them for downstream
+ * detection.
+ */
+function assertResourceResponseOk(response: unknown): void {
+  if (response == null || typeof response !== 'object') return;
+  const code = (response as Record<string, any>).code;
+  if (typeof code === 'number' && code !== 0) {
+    const msg = (response as Record<string, any>).msg ?? 'unknown error';
+    throw Object.assign(new Error(`[feishu-media] messageResource.get failed: code=${code}, msg=${msg}`), {
+      code,
+      msg,
+    });
+  }
+}
+
+/**
+ * Detect the "resource too large to download" failure (errCode 234037).
+ */
+export function isOversizeResourceError(err: unknown): boolean {
+  if (err == null || typeof err !== 'object') return false;
+  const obj = err as Record<string, any>;
+
+  const codes = [obj.code, obj.errCode, obj.response?.data?.code, obj.response?.data?.errCode];
+  if (codes.some((c) => Number(c) === OVERSIZE_RESOURCE_ERR_CODE)) return true;
+
+  const message = typeof obj.message === 'string' ? obj.message : '';
+  if (message.includes(String(OVERSIZE_RESOURCE_ERR_CODE))) return true;
+  if (/exceeds limit/i.test(message) && extractHttpStatus(err) === 400) return true;
+
+  return false;
+}
+
+/**
+ * Recover the Feishu business error body (`{ code, msg }`) from a thrown SDK
+ * error.
+ *
+ * Resource downloads run with `responseType: stream`, so on an HTTP error
+ * (e.g. the 100MB cap -> HTTP 400 with body `{"code":234037,"msg":"Downloaded
+ * file size exceeds limit."}`) axios throws an error whose `message` is only
+ * the generic "Request failed with status code 400" and leaves the JSON body
+ * unread as a stream on `err.response.data`.
+ */
+export async function recoverFeishuErrorCode(err: unknown): Promise<{ code?: number; msg?: string }> {
+  if (err == null || typeof err !== 'object') return {};
+  const data = (err as any).response?.data;
+  if (data == null) return {};
+
+  if (typeof data === 'object' && !Buffer.isBuffer(data) && typeof data.code === 'number') {
+    return { code: data.code, msg: data.msg };
+  }
+
+  let text: string | undefined;
+  try {
+    if (Buffer.isBuffer(data)) {
+      text = data.toString('utf8');
+    } else if (typeof data === 'string') {
+      text = data;
+    } else if (typeof data.pipe === 'function' || typeof data[Symbol.asyncIterator] === 'function') {
+      text = (await streamToBuffer(data as Readable)).toString('utf8');
+    }
+  } catch {
+    return {};
+  }
+  if (!text) return {};
+
+  try {
+    const parsed = JSON.parse(text) as { code?: number; msg?: string };
+    if (typeof parsed.code === 'number') return { code: parsed.code, msg: parsed.msg };
+  } catch {
+    // Body was not JSON; nothing to recover.
+  }
+  return {};
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -296,19 +380,33 @@ export async function downloadMessageResourceFeishu(params: {
 
   const client = LarkClient.fromCfg(cfg, accountId).sdk;
 
-  const response = await withRetry(
-    () =>
-      client.im.messageResource.get({
-        path: {
-          message_id: messageId,
-          file_key: fileKey,
-        },
-        params: {
-          type,
-        },
-      }),
-    `downloadMessageResource(${fileKey})`,
-  );
+  let response: unknown;
+  try {
+    response = await withRetry(
+      () =>
+        client.im.messageResource.get({
+          path: {
+            message_id: messageId,
+            file_key: fileKey,
+          },
+          params: {
+            type,
+          },
+        }),
+      `downloadMessageResource(${fileKey})`,
+    );
+  } catch (err) {
+    const { code, msg } = await recoverFeishuErrorCode(err);
+    if (typeof code === 'number' && code !== 0) {
+      throw Object.assign(
+        new Error(`[feishu-media] messageResource.get failed: code=${code}, msg=${msg ?? 'unknown error'}`),
+        { code, msg, cause: err },
+      );
+    }
+    throw err;
+  }
+
+  assertResourceResponseOk(response);
 
   const { buffer, contentType } = await extractBufferFromResponse(response);
 

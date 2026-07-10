@@ -16,6 +16,7 @@ import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
 import { buildRandomTempFilePath } from 'openclaw/plugin-sdk/temp-path';
 import { Type } from '@sinclair/typebox';
 import { StringEnum, createToolContext, handleInvokeErrorWithAutoAuth, json, registerTool } from '../helpers';
+import { handleOversizeResourceDownload } from '../../im-resource-oversize';
 
 // ---------------------------------------------------------------------------
 // Helper: MIME type to extension mapping
@@ -68,6 +69,9 @@ const FetchResourceSchema = Type.Object({
   file_key: Type.String({
     description: '资源 Key，从消息体中获取。图片消息的 image_key（img_xxx）或文件消息的 file_key（file_xxx）',
   }),
+  file_name: Type.Optional(Type.String({
+    description: '原始文件名（可选）。如果上下文里的 <file/> 标签带 name，请传入，便于提示卡展示。',
+  })),
   type: StringEnum(['image', 'file'], {
     description: '资源类型：image（图片消息中的图片）、file（文件/音频/视频消息中的文件）',
   }),
@@ -80,6 +84,7 @@ const FetchResourceSchema = Type.Object({
 interface FetchResourceParams {
   message_id: string;
   file_key: string;
+  file_name?: string;
   type: 'image' | 'file';
 }
 
@@ -183,6 +188,20 @@ export function registerFeishuImUserFetchResourceTool(api: OpenClawPluginApi): b
             });
           }
         } catch (err) {
+          const oversize = await handleOversizeResourceDownload({
+            cfg,
+            err,
+            messageId: p.message_id,
+            fileKey: p.file_key,
+            fileName: p.file_name,
+            type: p.type,
+            log: (msg) => log.warn(String(msg)),
+          });
+          if (oversize) {
+            log.warn(`fetch_resource: resource exceeds Feishu 100MB IM cap`);
+            return json(oversize);
+          }
+
           return await handleInvokeErrorWithAutoAuth(err, cfg);
         }
       },

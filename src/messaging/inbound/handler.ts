@@ -39,6 +39,7 @@ import {
   resolveSenderInfo,
   substituteMediaPaths,
 } from './enrich';
+import { handleLargeFileGuidance } from './large-file-hint';
 import { type GateResult, checkMessageGate, readFeishuAllowFromStore } from './gate';
 import { injectInboundHandler } from './handler-registry';
 import { dispatchToAgent } from './dispatch';
@@ -186,20 +187,51 @@ export async function handleFeishuMessage(params: {
 
   // 7. Enrich (heavyweight, after gate — parallel where possible)
   const enrichParams = { ctx, accountScopedCfg, account, log };
-  const [mediaResult, quotedContent] = await Promise.all([
+  const [mediaResult, quotedResolution] = await Promise.all([
     resolveMedia(enrichParams),
     resolveQuotedContent(enrichParams),
   ]);
 
   // 7b. Replace Feishu file-key placeholders in content with local
   //     file paths so the SDK can detect images for native vision and
-  //     the AI receives meaningful file references.
-  if (mediaResult.mediaList.length > 0) {
+  //     the AI receives meaningful file references. Oversize files (>100MB
+  //     IM cap) are replaced with an informative notice instead.
+  const oversizeFiles = mediaResult.oversizeFiles ?? [];
+  const quotedOversizeFiles = quotedResolution?.oversizeFiles ?? [];
+  if (mediaResult.mediaList.length > 0 || oversizeFiles.length > 0) {
     ctx = {
       ...ctx,
-      content: substituteMediaPaths(ctx.content, mediaResult.mediaList),
+      content: substituteMediaPaths(ctx.content, mediaResult.mediaList, oversizeFiles),
     };
   }
+
+  // 7c. Guide the user to re-share any too-large file via Drive. Best-effort.
+  const guidanceParams = {
+    accountScopedCfg,
+    accountId: account.accountId,
+    chatId: ctx.chatId,
+    messageId: ctx.messageId,
+    chatType: ctx.chatType,
+    log,
+  };
+  const directOversizeHandled = await handleLargeFileGuidance({
+    ...guidanceParams,
+    oversizeFiles,
+    source: 'direct',
+  });
+
+  // 7d. Once an oversize IM resource is handled here, do not also dispatch to
+  //     the agent. The agent cannot read the file and may otherwise emit a
+  //     second explanatory reply or call a tool that sends a duplicate card.
+  if (directOversizeHandled) return;
+
+  const quotedOversizeHandled = await handleLargeFileGuidance({
+    ...guidanceParams,
+    replyInThread: Boolean(ctx.threadId),
+    oversizeFiles: quotedOversizeFiles,
+    source: 'quoted',
+  });
+  if (quotedOversizeHandled) return;
 
   // 8. Compute commandAuthorized via SDK access group command gating
   const core = LarkClient.runtime;
@@ -321,7 +353,7 @@ export async function handleFeishuMessage(params: {
       ctx,
       permissionError,
       mediaPayload: mediaResult.payload,
-      quotedContent,
+      quotedContent: quotedResolution?.content,
       account,
       accountScopedCfg,
       runtime,

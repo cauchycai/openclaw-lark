@@ -29,7 +29,12 @@ import { getMessageFeishu } from '../outbound/fetch';
 import type { PermissionError } from './permission';
 import { PERMISSION_ERROR_COOLDOWN_MS, permissionErrorNotifiedAt } from './permission';
 import { batchResolveUserNames, getUserNameCache, resolveBotName, resolveUserName  } from './user-name-cache';
-import { buildFeishuMediaPayload, downloadResources } from './media-resolver';
+import {
+  type OversizeFileInfo,
+  buildFeishuMediaPayload,
+  detectOversizeResources,
+  downloadResources,
+} from './media-resolver';
 
 // ---------------------------------------------------------------------------
 // Phase 1: Sender info (lightweight, before gate)
@@ -135,6 +140,8 @@ export async function prefetchUserNames(params: {
 export interface ResolveMediaResult {
   payload: Record<string, unknown>;
   mediaList: FeishuMediaInfo[];
+  /** Files that exceeded the 100MB IM cap and could not be downloaded. */
+  oversizeFiles: OversizeFileInfo[];
 }
 
 /**
@@ -158,9 +165,9 @@ export async function resolveMedia(params: {
   const { ctx, accountScopedCfg, account, log } = params;
   const accountFeishuCfg = account.config;
 
-  const mediaMaxBytes = (accountFeishuCfg?.mediaMaxMb ?? 30) * 1024 * 1024;
+  const mediaMaxBytes = (accountFeishuCfg?.mediaMaxMb ?? 512) * 1024 * 1024;
 
-  const mediaList = await downloadResources({
+  const { media: mediaList, oversize: oversizeFiles } = await downloadResources({
     cfg: accountScopedCfg,
     messageId: ctx.messageId,
     resources: ctx.resources,
@@ -172,10 +179,14 @@ export async function resolveMedia(params: {
   if (mediaList.length > 0) {
     log(`media resolved: ${mediaList.length} attachment(s)`);
   }
+  if (oversizeFiles.length > 0) {
+    log(`media: ${oversizeFiles.length} attachment(s) exceed the 100MB IM cap`);
+  }
 
   return {
     payload: buildFeishuMediaPayload(mediaList),
     mediaList,
+    oversizeFiles,
   };
 }
 
@@ -194,7 +205,11 @@ export async function resolveMedia(params: {
  *   what was received (the SDK reads these via `MediaPath` directly,
  *   but the text body should still reflect the actual attachments).
  */
-export function substituteMediaPaths(content: string, mediaList: FeishuMediaInfo[]): string {
+export function substituteMediaPaths(
+  content: string,
+  mediaList: FeishuMediaInfo[],
+  oversizeFiles: OversizeFileInfo[] = [],
+): string {
   let result = content;
   for (const media of mediaList) {
     const { fileKey, path, resourceType } = media;
@@ -227,6 +242,32 @@ export function substituteMediaPaths(content: string, mediaList: FeishuMediaInfo
       }
     }
   }
+
+  // Replace placeholders for resources that exceeded the 100MB IM cap so the
+  // agent sees an informative notice instead of a dangling media tag.
+  for (const file of oversizeFiles) {
+    const name = file.fileName ? ` "${file.fileName}"` : '';
+    const notice = `[文件${name} >=100mb，机器人无法直接接收；请将其保存到云盘后通过「云文档」分享到本会话]`;
+    const key = escapeRegExp(file.fileKey);
+    switch (file.resourceType) {
+      case 'image':
+        result = result.replace(`![image](${file.fileKey})`, notice);
+        break;
+      case 'sticker':
+        result = result.replace(new RegExp(`<sticker key="${key}"[^/]*/>`), notice);
+        break;
+      case 'audio':
+        result = result.replace(new RegExp(`<audio key="${key}"[^/]*/>`), notice);
+        break;
+      case 'file':
+        result = result.replace(new RegExp(`<file key="${key}"[^/]*/>`), notice);
+        break;
+      case 'video':
+        result = result.replace(new RegExp(`<video key="${key}"[^/]*/>`), notice);
+        break;
+    }
+  }
+
   return result;
 }
 
@@ -237,6 +278,11 @@ function escapeRegExp(s: string): string {
 // ---------------------------------------------------------------------------
 // Phase 2b: Quoted / replied-to message (text context)
 // ---------------------------------------------------------------------------
+
+export interface ResolveQuotedContentResult {
+  content: string;
+  oversizeFiles: OversizeFileInfo[];
+}
 
 /**
  * Fetch the text content of the message that the user replied to.
@@ -253,7 +299,7 @@ export async function resolveQuotedContent(params: {
   accountScopedCfg: ClawdbotConfig;
   account: LarkAccount;
   log: (...args: unknown[]) => void;
-}): Promise<string | undefined> {
+}): Promise<ResolveQuotedContentResult | undefined> {
   const { ctx, accountScopedCfg, account, log } = params;
 
   if (!ctx.parentId) return undefined;
@@ -269,13 +315,30 @@ export async function resolveQuotedContent(params: {
 
     log(`feishu[${account.accountId}]: fetched quoted message: ${quotedMsg.content?.slice(0, 100)}`);
 
+    let quotedContent = quotedMsg.content;
+    let quotedOversize: OversizeFileInfo[] = [];
+    const quotedResources = quotedMsg.resources ?? [];
+    if (quotedResources.length > 0) {
+      quotedOversize = await detectOversizeResources({
+        cfg: accountScopedCfg,
+        messageId: ctx.parentId,
+        resources: quotedResources,
+        log,
+        accountId: account.accountId,
+      });
+
+      if (quotedOversize.length > 0) {
+        quotedContent = substituteMediaPaths(quotedContent, [], quotedOversize);
+      }
+    }
+
     // Build quoted text with message_id prefix so AI can correlate
     // file_key / image_key with the source message for resource download.
     const prefix = `[message_id=${ctx.parentId}]`;
-    if (quotedMsg.senderName) {
-      return `${prefix} ${quotedMsg.senderName}: ${quotedMsg.content}`;
-    }
-    return `${prefix} ${quotedMsg.content}`;
+    const content = quotedMsg.senderName
+      ? `${prefix} ${quotedMsg.senderName}: ${quotedContent}`
+      : `${prefix} ${quotedContent}`;
+    return { content, oversizeFiles: quotedOversize };
   } catch (err) {
     log(`feishu[${account.accountId}]: failed to fetch quoted message: ${String(err)}`);
     return undefined;

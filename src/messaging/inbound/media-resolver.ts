@@ -12,11 +12,27 @@
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 import type { FeishuMediaInfo, ResourceDescriptor } from '../types';
 import { LarkClient } from '../../core/lark-client';
-import { downloadMessageResourceFeishu } from '../outbound/media';
+import { downloadMessageResourceFeishu, isOversizeResourceError } from '../outbound/media';
 
 // ---------------------------------------------------------------------------
 // Resource-descriptor-based download
 // ---------------------------------------------------------------------------
+
+/**
+ * A resource the bot could not download because it exceeds Feishu's 100MB
+ * IM-attachment cap (errCode 234037).
+ */
+export interface OversizeFileInfo {
+  fileKey: string;
+  fileName?: string;
+  resourceType: ResourceDescriptor['type'];
+}
+
+/** Result of {@link downloadResources}: downloaded media + oversize files. */
+export interface DownloadResourcesResult {
+  media: FeishuMediaInfo[];
+  oversize: OversizeFileInfo[];
+}
 
 /**
  * Download media files based on pre-extracted ResourceDescriptors from
@@ -29,22 +45,22 @@ export async function downloadResources(params: {
   maxBytes: number;
   log?: (msg: string) => void;
   accountId?: string;
-}): Promise<FeishuMediaInfo[]> {
+}): Promise<DownloadResourcesResult> {
   const { cfg, messageId, resources, maxBytes, log, accountId } = params;
 
-  if (resources.length === 0) return [];
+  if (resources.length === 0) return { media: [], oversize: [] };
 
   const out: FeishuMediaInfo[] = [];
+  const oversize: OversizeFileInfo[] = [];
   const core = LarkClient.runtime;
 
   for (const res of resources) {
     try {
-      const resourceType = res.type === 'image' ? 'image' : 'file';
       const result = await downloadMessageResourceFeishu({
         cfg,
         messageId,
         fileKey: res.fileKey,
-        type: resourceType,
+        type: toMessageResourceType(res.type),
         accountId,
       });
 
@@ -67,11 +83,62 @@ export async function downloadResources(params: {
 
       log?.(`feishu: downloaded ${res.type} resource ${res.fileKey}, saved to ${saved.path}`);
     } catch (err) {
-      log?.(`feishu: failed to download ${res.type} resource ${res.fileKey}: ${String(err)}`);
+      if (isOversizeResourceError(err)) {
+        oversize.push({ fileKey: res.fileKey, fileName: res.fileName, resourceType: res.type });
+        log?.(`feishu: ${res.type} resource ${res.fileKey} exceeds 100MB IM cap; guiding user to re-share via Drive`);
+      } else {
+        log?.(`feishu: failed to download ${res.type} resource ${res.fileKey}: ${String(err)}`);
+      }
     }
   }
 
-  return out;
+  return { media: out, oversize };
+}
+
+/**
+ * Probe message resources only for Feishu's 100MB IM-resource cap.
+ *
+ * This intentionally does not save successfully downloaded resources or return
+ * local media paths. It is used for quoted/history messages where the normal
+ * agent-facing `<file key="..."/>` behavior should stay unchanged unless the
+ * resource is too large and would otherwise fail later with errCode 234037.
+ */
+export async function detectOversizeResources(params: {
+  cfg: ClawdbotConfig;
+  messageId: string;
+  resources: ResourceDescriptor[];
+  log?: (msg: string) => void;
+  accountId?: string;
+}): Promise<OversizeFileInfo[]> {
+  const { cfg, messageId, resources, log, accountId } = params;
+
+  if (resources.length === 0) return [];
+
+  const oversize: OversizeFileInfo[] = [];
+  for (const res of resources) {
+    try {
+      await downloadMessageResourceFeishu({
+        cfg,
+        messageId,
+        fileKey: res.fileKey,
+        type: toMessageResourceType(res.type),
+        accountId,
+      });
+    } catch (err) {
+      if (isOversizeResourceError(err)) {
+        oversize.push({ fileKey: res.fileKey, fileName: res.fileName, resourceType: res.type });
+        log?.(`feishu: quoted ${res.type} resource ${res.fileKey} exceeds 100MB IM cap; guiding user to re-share via Drive`);
+      } else {
+        log?.(`feishu: failed to probe quoted ${res.type} resource ${res.fileKey}: ${String(err)}`);
+      }
+    }
+  }
+
+  return oversize;
+}
+
+function toMessageResourceType(type: ResourceDescriptor['type']): 'image' | 'file' {
+  return type === 'image' ? 'image' : 'file';
 }
 
 function inferPlaceholderFromType(type: ResourceDescriptor['type']): string {
