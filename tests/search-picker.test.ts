@@ -34,9 +34,11 @@ vi.mock('../src/core/runtime-store', () => ({
   tryGetLarkRuntime: () => runtimeState.current,
 }));
 
+const sendMessageFeishuMock = vi.fn();
+
 vi.mock('../src/messaging/outbound/send', () => ({
   sendCardFeishu: vi.fn(),
-  sendMessageFeishu: vi.fn(),
+  sendMessageFeishu: (...args: unknown[]) => sendMessageFeishuMock(...args),
 }));
 
 import {
@@ -74,6 +76,11 @@ function createActionPayload(provider: string) {
   };
 }
 
+async function flushSearchPickerBackground() {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
+}
+
 describe('buildSearchPickerCard', () => {
   it('marks the current provider as primary', () => {
     const cfg = createSearchConfig('turing-baidu');
@@ -95,9 +102,51 @@ describe('handleSearchPickerAction', () => {
     runtimeState.current = null;
     execFileMock.mockReset();
     execFileMock.mockRejectedValue(new Error('gateway unavailable'));
+    sendMessageFeishuMock.mockReset();
+    sendMessageFeishuMock.mockResolvedValue(undefined);
   });
 
-  it('applies the selected provider through Gateway config.patch before returning success', async () => {
+  it('returns an optimistic success toast before apply finishes', async () => {
+    let releasePatch!: () => void;
+    const patchGate = new Promise<void>((resolve) => {
+      releasePatch = resolve;
+    });
+    const gatewayRequest = vi.fn(async (method: string) => {
+      if (method === 'config.get') return { hash: 'hash-1', config: createSearchConfig('firecrawl') };
+      if (method === 'config.patch') {
+        await patchGate;
+        return { ok: true };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    runtimeState.current = {
+      gateway: {
+        request: gatewayRequest,
+      },
+    };
+
+    const result = handleSearchPickerAction(createActionPayload('turing-baidu'), createSearchConfig(), 'feishu-a1');
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to Baidu Search',
+      },
+    });
+    expect(gatewayRequest).not.toHaveBeenCalled();
+
+    releasePatch();
+    await flushSearchPickerBackground();
+
+    expect(gatewayRequest).toHaveBeenCalledWith('config.get', {});
+    expect(gatewayRequest).toHaveBeenCalledWith('config.patch', {
+      raw: JSON.stringify({ tools: { web: { search: { provider: 'turing-baidu' } } } }),
+      baseHash: 'hash-1',
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('applies the selected provider through Gateway config.patch in the background', async () => {
     const gatewayRequest = vi.fn(async (method: string) => {
       if (method === 'config.get') return { hash: 'hash-1', config: createSearchConfig('firecrawl') };
       if (method === 'config.patch') return { ok: true };
@@ -109,11 +158,16 @@ describe('handleSearchPickerAction', () => {
       },
     };
 
-    const result = await handleSearchPickerAction(
-      createActionPayload('turing-baidu'),
-      createSearchConfig(),
-      'feishu-a1',
-    );
+    const result = handleSearchPickerAction(createActionPayload('turing-baidu'), createSearchConfig(), 'feishu-a1');
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to Baidu Search',
+      },
+    });
+
+    await flushSearchPickerBackground();
 
     expect(gatewayRequest).toHaveBeenCalledWith('config.get', {});
     expect(gatewayRequest).toHaveBeenCalledWith('config.patch', {
@@ -121,24 +175,23 @@ describe('handleSearchPickerAction', () => {
       baseHash: 'hash-1',
     });
     expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('can apply the selected provider through Gateway CLI config.patch in the background', async () => {
+    execFileMock
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ hash: 'hash-cli', config: createSearchConfig('firecrawl') }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true }) });
+
+    const result = handleSearchPickerAction(createActionPayload('turing-baidu'), createSearchConfig(), 'feishu-a1');
+
     expect(result).toMatchObject({
       toast: {
         type: 'success',
         content: 'Switched to Baidu Search',
       },
     });
-  });
 
-  it('can apply the selected provider through Gateway CLI config.patch', async () => {
-    execFileMock
-      .mockResolvedValueOnce({ stdout: JSON.stringify({ hash: 'hash-cli', config: createSearchConfig('firecrawl') }) })
-      .mockResolvedValueOnce({ stdout: JSON.stringify({ ok: true }) });
-
-    const result = await handleSearchPickerAction(
-      createActionPayload('turing-baidu'),
-      createSearchConfig(),
-      'feishu-a1',
-    );
+    await flushSearchPickerBackground();
 
     expect(execFileMock).toHaveBeenNthCalledWith(
       1,
@@ -162,15 +215,9 @@ describe('handleSearchPickerAction', () => {
       ],
       { timeout: 30_000 },
     );
-    expect(result).toMatchObject({
-      toast: {
-        type: 'success',
-        content: 'Switched to Baidu Search',
-      },
-    });
   });
 
-  it('reports Gateway config.patch noop as runtime-unconfirmed', async () => {
+  it('still returns optimistic success when Gateway config.patch noop happens in the background', async () => {
     const gatewayRequest = vi.fn(async (method: string) => {
       if (method === 'config.get') return { hash: 'hash-1', config: createSearchConfig('turing-baidu') };
       if (method === 'config.patch') return { ok: true, noop: true };
@@ -182,7 +229,7 @@ describe('handleSearchPickerAction', () => {
       },
     };
 
-    const result = await handleSearchPickerAction(
+    const result = handleSearchPickerAction(
       createActionPayload('turing-baidu'),
       createSearchConfig('turing-baidu'),
       'feishu-a1',
@@ -190,14 +237,16 @@ describe('handleSearchPickerAction', () => {
 
     expect(result).toMatchObject({
       toast: {
-        type: 'warning',
-        content:
-          'Saved Baidu Search, but the running Gateway did not confirm it was applied. Use Gateway config.patch or upgrade OpenClaw.',
+        type: 'success',
+        content: 'Switched to Baidu Search',
       },
     });
+
+    await flushSearchPickerBackground();
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
   });
 
-  it('falls back to live runtime config writes but reports runtime as unconfirmed', async () => {
+  it('falls back to live runtime config writes in the background', async () => {
     let liveConfig = createSearchConfig('firecrawl');
     const writeConfigFile = vi.fn(async (next: ClawdbotConfig) => {
       liveConfig = next;
@@ -209,22 +258,24 @@ describe('handleSearchPickerAction', () => {
       },
     };
 
-    const result = await handleSearchPickerAction(createActionPayload('turing-baidu'), liveConfig, 'feishu-a1');
+    const result = handleSearchPickerAction(createActionPayload('turing-baidu'), liveConfig, 'feishu-a1');
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to Baidu Search',
+      },
+    });
+
+    await flushSearchPickerBackground();
 
     expect(writeConfigFile).toHaveBeenCalledTimes(1);
     expect((liveConfig as { tools?: { web?: { search?: { provider?: string } } } }).tools?.web?.search?.provider).toBe(
       'turing-baidu',
     );
-    expect(result).toMatchObject({
-      toast: {
-        type: 'warning',
-        content:
-          'Saved Baidu Search, but the running Gateway did not confirm it was applied. Use Gateway config.patch or upgrade OpenClaw.',
-      },
-    });
   });
 
-  it('returns an error toast when the runtime config write fails', async () => {
+  it('notifies the user when the background apply fails', async () => {
     const cfg = createSearchConfig('firecrawl');
     runtimeState.current = {
       config: {
@@ -235,13 +286,23 @@ describe('handleSearchPickerAction', () => {
       },
     };
 
-    const result = await handleSearchPickerAction(createActionPayload('turing-baidu'), cfg, 'feishu-a1');
+    const result = handleSearchPickerAction(createActionPayload('turing-baidu'), cfg, 'feishu-a1');
 
     expect(result).toMatchObject({
       toast: {
-        type: 'error',
-        content: 'Failed to switch the search provider. Try again later or contact your admin.',
+        type: 'success',
+        content: 'Switched to Baidu Search',
       },
     });
+
+    await flushSearchPickerBackground();
+
+    expect(sendMessageFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'ou_user_1',
+        text: '切换搜索源失败，请稍后再试或联系管理员。',
+        accountId: 'feishu-a1',
+      }),
+    );
   });
 });

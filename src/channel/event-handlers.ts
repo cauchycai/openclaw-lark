@@ -435,7 +435,7 @@ export async function handleCardActionEvent(ctx: MonitorContext, data: unknown):
     const modelResult = handleModelPickerAction(data, ctx.cfg, ctx.accountId);
     if (modelResult !== undefined) return modelResult;
 
-    const searchResult = await handleSearchPickerAction(data, ctx.cfg, ctx.accountId);
+    const searchResult = handleSearchPickerAction(data, ctx.cfg, ctx.accountId);
     if (searchResult !== undefined) return searchResult;
 
     // auto-auth：授权/权限引导相关卡片交互（宿主内建能力优先）

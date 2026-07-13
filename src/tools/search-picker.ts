@@ -11,6 +11,10 @@
  * through the Gateway control plane when available. Older OpenClaw builds can
  * classify `tools.*` writes as noop reloads, so plugin-local file writes are
  * treated only as a compatibility fallback and not as runtime-applied changes.
+ *
+ * Card callbacks must return within Feishu's ~3s window, so `set_search` returns
+ * an optimistic toast/card immediately and applies the provider in the background
+ * (same pattern as model-picker and auto-auth).
  */
 
 import { execFile } from 'node:child_process';
@@ -485,11 +489,11 @@ export async function handleMenuPickSearchEvent(ctx: MonitorContext, data: unkno
   }
 }
 
-export async function handleSearchPickerAction(
+export function handleSearchPickerAction(
   data: unknown,
   cfg: ClawdbotConfig,
   accountId: string,
-): Promise<unknown | undefined> {
+): unknown | undefined {
   let action: string | undefined;
   let provider: string | undefined;
   let senderOpenId: string | undefined;
@@ -521,35 +525,40 @@ export async function handleSearchPickerAction(
     };
   }
 
-  let applyResult: ApplySearchProviderResult;
-  try {
-    applyResult = await applySearchProvider(target.id);
-    log.info(
-      `search picker set provider account=${accountId} openId=${senderOpenId} provider=${target.id} source=${applyResult.source} fileUpdated=${applyResult.fileUpdated} runtimeApplied=${applyResult.runtimeApplied}${applyResult.reason ? ` reason=${applyResult.reason}` : ''}`,
-    );
-  } catch (err) {
-    log.error(
-      `search picker apply failed account=${accountId} openId=${senderOpenId} provider=${target.id}: ${String(err)}`,
-    );
-    return {
-      toast: {
-        type: 'error',
-        ...i18nToast(CARD_TEXTS.zh_cn.switchFailed, CARD_TEXTS.en_us.switchFailed),
-      },
-    };
-  }
+  setImmediate(() => {
+    void (async () => {
+      try {
+        const applyResult = await applySearchProvider(target.id);
+        log.info(
+          `search picker set provider account=${accountId} openId=${senderOpenId} provider=${target.id} source=${applyResult.source} fileUpdated=${applyResult.fileUpdated} runtimeApplied=${applyResult.runtimeApplied}${applyResult.reason ? ` reason=${applyResult.reason}` : ''}`,
+        );
+      } catch (err) {
+        log.error(
+          `search picker apply failed account=${accountId} openId=${senderOpenId} provider=${target.id}: ${String(err)}`,
+        );
+        try {
+          await sendMessageFeishu({
+            cfg: accountScopedCfg,
+            to: senderOpenId,
+            text: CARD_TEXTS.zh_cn.switchFailed,
+            accountId,
+          });
+        } catch (notifyErr) {
+          log.error(`search picker failure notify failed account=${accountId}: ${String(notifyErr)}`);
+        }
+      }
+    })();
+  });
 
-  const zhToast = applyResult.runtimeApplied
-    ? CARD_TEXTS.zh_cn.switchedTo(target.label.zh_cn)
-    : CARD_TEXTS.zh_cn.savedRuntimeUnconfirmed(target.label.zh_cn);
-  const enToast = applyResult.runtimeApplied
-    ? CARD_TEXTS.en_us.switchedTo(target.label.en_us)
-    : CARD_TEXTS.en_us.savedRuntimeUnconfirmed(target.label.en_us);
+  log.info(`search picker set_search account=${accountId} openId=${senderOpenId} provider=${target.id}`);
 
   return {
     toast: {
-      type: applyResult.runtimeApplied ? 'success' : 'warning',
-      ...i18nToast(zhToast, enToast),
+      type: 'success',
+      ...i18nToast(
+        CARD_TEXTS.zh_cn.switchedTo(target.label.zh_cn),
+        CARD_TEXTS.en_us.switchedTo(target.label.en_us),
+      ),
     },
     card: {
       type: 'raw',
