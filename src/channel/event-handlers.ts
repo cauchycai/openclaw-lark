@@ -28,6 +28,10 @@ import { handleCardAction } from '../tools/auto-auth';
 import { handleAskUserAction } from '../tools/ask-user-question';
 import { handleMenuPickModelEvent as dispatchMenuPickModelEvent, handleModelPickerAction } from '../tools/model-picker';
 import { handleMenuRestartEvent as dispatchMenuRestartEvent } from '../tools/restart-button';
+import {
+  handleMenuPickSearchEvent as dispatchMenuPickSearchEvent,
+  handleSearchPickerAction,
+} from '../tools/search-picker';
 import { buildQueueKey, enqueueFeishuChatTask, getActiveDispatcher, hasActiveTask } from './chat-queue';
 import { extractRawTextFromEvent, isLikelyAbortText } from './abort-detect';
 import type { MonitorContext } from './types';
@@ -412,6 +416,7 @@ export async function handleMenuPickModelEvent(ctx: MonitorContext, data: unknow
   try {
     await dispatchMenuPickModelEvent(ctx, data);
     await dispatchMenuRestartEvent(ctx, data);
+    await dispatchMenuPickSearchEvent(ctx, data);
   } catch (err) {
     elog.warn(`application.bot.menu_v6 handler error: ${err}`);
   }
@@ -429,6 +434,9 @@ export async function handleCardActionEvent(ctx: MonitorContext, data: unknown):
 
     const modelResult = handleModelPickerAction(data, ctx.cfg, ctx.accountId);
     if (modelResult !== undefined) return modelResult;
+
+    const searchResult = handleSearchPickerAction(data, ctx.cfg, ctx.accountId);
+    if (searchResult !== undefined) return searchResult;
 
     // auto-auth：授权/权限引导相关卡片交互（宿主内建能力优先）
     const authResult = await handleCardAction(data, ctx.cfg, ctx.accountId);
