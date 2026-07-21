@@ -48,6 +48,7 @@ import {
   resolveFeishuReplyRouting,
 } from './bot-content';
 import { dispatchPermissionNotification, dispatchSystemCommand } from './dispatch-commands';
+import { trySteerMidRunFollowup } from './dispatch-mid-run-steer';
 import {
   buildBodyForAgent,
   buildEnvelopeWithHistory,
@@ -373,6 +374,11 @@ export async function dispatchToAgent(params: {
   skipTyping?: boolean;
   /** The receiving bot's own open_id, used for self-identity injection. */
   botOpenId?: string;
+  /**
+   * When true, this message arrived while another chat task was active
+   * (bypass-active). Prefer same-turn steer injection over a second card run.
+   */
+  midRunFollowup?: boolean;
 }): Promise<void> {
   // 1. Derive shared context (including route resolution + system event)
   const dc = buildDispatchContext(params);
@@ -554,7 +560,7 @@ export async function dispatchToAgent(params: {
     return;
   }
 
-  // 8. Dispatch: system command vs. normal message
+  // 8. Dispatch: mid-run steer / system command / normal message
   //    Comment targets always go to normal dispatch — system command
   //    delivery uses sendMessageFeishu which can't reach comment threads.
   const isCommand = !isCommentFlow &&
@@ -562,6 +568,36 @@ export async function dispatchToAgent(params: {
 
   // Resolve per-group skill filter (per-group > default "*")
   const skillFilter = dc.isGroup ? (params.groupConfig?.skills ?? params.defaultGroupConfig?.skills) : undefined;
+
+  // Mid-run follow-ups (bypass-active): inject into the active run via the
+  // harness queue API instead of opening a second streaming-card agent turn.
+  // Skipped for control commands (they already have their own path) and
+  // comment targets.
+  if (
+    params.midRunFollowup &&
+    !isCommand &&
+    !isCommentFlow &&
+    params.commandAuthorized !== false
+  ) {
+    const steerText = (params.ctx.content ?? '').trim();
+    if (steerText && !isLikelyAbortText(steerText)) {
+      const steerResult = await trySteerMidRunFollowup({
+        dc,
+        steerText,
+        replyToMessageId: params.replyToMessageId,
+      });
+      if (steerResult === 'steered') {
+        if (dc.isGroup && historyKey && params.chatHistories) {
+          clearHistoryEntriesIfEnabled({
+            historyMap: params.chatHistories,
+            historyKey,
+            limit: params.historyLimit,
+          });
+        }
+        return;
+      }
+    }
+  }
 
   if (isCommand) {
     await dispatchSystemCommand(dc, ctxPayload, params.replyToMessageId);
