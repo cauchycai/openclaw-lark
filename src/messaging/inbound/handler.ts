@@ -69,9 +69,25 @@ export async function handleFeishuMessage(params: {
   forceMention?: boolean;
   /** When true, skip the typing indicator for this dispatch (e.g. reactions). */
   skipTyping?: boolean;
+  /**
+   * When true, this inbound arrived while another Feishu chat task was still
+   * active (bypass-active). Prefer same-turn active-run injection over opening
+   * a second streaming-card agent run.
+   */
+  midRunFollowup?: boolean;
 }): Promise<void> {
-  const { cfg, event, botOpenId, runtime, chatHistories, accountId, replyToMessageId, forceMention, skipTyping } =
-    params;
+  const {
+    cfg,
+    event,
+    botOpenId,
+    runtime,
+    chatHistories,
+    accountId,
+    replyToMessageId,
+    forceMention,
+    skipTyping,
+    midRunFollowup,
+  } = params;
 
   // 1. Account resolution
   const account = getLarkAccount(cfg, accountId);
@@ -365,6 +381,7 @@ export async function handleFeishuMessage(params: {
       defaultGroupConfig,
       skipTyping,
       botOpenId,
+      midRunFollowup,
     });
   } catch (err) {
     error(`feishu[${account.accountId}]: failed to dispatch message: ${String(err)}`);

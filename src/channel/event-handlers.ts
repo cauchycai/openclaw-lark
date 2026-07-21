@@ -135,6 +135,9 @@ export async function handleMessageEvent(ctx: MonitorContext, data: unknown): Pr
       }
     }
 
+    // Captured by the task closure; assigned synchronously after enqueue
+    // returns, before any bypass-active microtask runs.
+    let midRunFollowup = false;
     const { status } = enqueueFeishuChatTask({
       accountId,
       chatId,
@@ -160,6 +163,7 @@ export async function handleMessageEvent(ctx: MonitorContext, data: unknown): Pr
                 runtime: ctx.runtime,
                 chatHistories: ctx.chatHistories,
                 accountId,
+                midRunFollowup,
               }),
           );
         } catch (err) {
@@ -167,6 +171,7 @@ export async function handleMessageEvent(ctx: MonitorContext, data: unknown): Pr
         }
       },
     });
+    midRunFollowup = status === 'bypass-active';
     log(`feishu[${accountId}]: message ${msgId} in chat ${chatId}${threadId ? ` thread ${threadId}` : ''} — ${status}`);
   } catch (err) {
     error(`feishu[${accountId}]: error handling message: ${String(err)}`);
