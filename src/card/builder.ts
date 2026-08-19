@@ -8,6 +8,7 @@
  * different agent response states (thinking, streaming, complete, confirm).
  */
 
+import { toInAppWebUrl } from '../tools/oauth-cards';
 import { optimizeMarkdownStyle } from './markdown-style';
 import type { FooterSessionMetrics } from './reply-dispatcher-types';
 import { EMPTY_TOOL_USE_PLACEHOLDER, type ToolUseDisplayStep } from './tool-use-display';
@@ -546,6 +547,11 @@ function buildCompleteCard(params: {
     content: optimizeMarkdownStyle(text),
   });
 
+  // Asset panel is NOT inserted here. Scheme B: finalize stays clean; the
+  // notifier inserts the panel only when assets.ready reports real assets
+  // (or a failure line). No-workspace-change runs stay silent — no
+  // "正在整理资产" placeholder.
+
   // Footer meta-info: split into two lines for readability.
   // Line 1 (primary): status · elapsed · balance usage · model
   // Line 2 (detail):  tokens · cache · context
@@ -997,4 +1003,196 @@ function longestBacktickRun(value: string): number {
 
 function escapeToolUseMarkdownText(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/([`*_{}[\]<>])/g, '\\$1');
+}
+
+// ---------------------------------------------------------------------------
+// Personal Asset panel
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal asset descriptor used by the personal-asset card panel.
+ * Defined here so both `notifier.ts` and `card-patch.ts` can import it
+ * without a circular dependency.
+ */
+export interface AssetSummary {
+  id: string;
+  title: string;
+  source_path?: string;
+  extension?: string;
+  version?: number;
+  /** Stable orchestrator H5 URL; Feishu authenticates the clicker when it opens. */
+  preview_url?: string;
+}
+
+/**
+ * Derive the display label for one asset row.
+ *
+ * Format: `• name.md · v2 (/workspace/dir/name.md)`
+ * - name: basename of source_path when present, else title (+ extension)
+ * - ` · vN` only when version > 1
+ * - workspace address always in parentheses when source_path is known
+ */
+export function formatAssetLine(asset: AssetSummary): string {
+  const sourcePath = String(asset.source_path ?? '').trim().replace(/^\/+/, '');
+  const rawTitle = String(asset.title ?? '').trim();
+
+  const explicitExt = String(asset.extension ?? '').trim().replace(/^\./, '');
+  const pathExt = sourcePath.includes('.') ? (sourcePath.split('.').pop()?.trim() ?? '') : '';
+  const ext = explicitExt || pathExt;
+
+  const basename = sourcePath.includes('/')
+    ? sourcePath.slice(sourcePath.lastIndexOf('/') + 1)
+    : sourcePath;
+
+  let displayName = basename || rawTitle || '未命名资产';
+  if (ext && !displayName.toLowerCase().endsWith(`.${ext.toLowerCase()}`)) {
+    displayName = `${displayName}.${ext}`;
+  }
+
+  const version =
+    Number.isInteger(asset.version) && (asset.version ?? 0) > 1 ? ` · v${asset.version}` : '';
+  const address = sourcePath ? ` (/workspace/${sourcePath})` : '';
+
+  return `• ${displayName}${version}${address}`;
+}
+
+export function formatAssetLineWithPreview(asset: AssetSummary): string {
+  const line = formatAssetLine(asset);
+  const targetUrl = String(asset.preview_url ?? '').trim();
+  if (!targetUrl) return line;
+  const url = toInAppWebUrl(targetUrl, 'feishu');
+  // Schema V2 collapsible_panel rejects nested `action` elements (230099 / 200861),
+  // but its markdown element supports links. The applink keeps sidebar-semi behavior.
+  return `${line} · [预览](${url})`;
+}
+
+/**
+ * Element ID used to locate the asset panel for replacement during patch.
+ * The notifier's patch logic finds this element by id and swaps it out.
+ */
+/**
+ * Feishu CardKit element_id max length is 20 chars (alphanumeric + underscore,
+ * must start with a letter). A longer id was rejected with CardKit code 300301
+ * (elementID format error).
+ */
+export const ASSET_PANEL_ELEMENT_ID = 'personal_assets';
+
+export type AssetPanelState =
+  /** Curator is still running — shown immediately after finalize. */
+  | 'pending'
+  /** Curator finished and produced assets. */
+  | 'completed'
+  /** Curator finished but no assets were kept. */
+  | 'no_assets'
+  /** Curator failed. */
+  | 'failed';
+
+/**
+ * Build the asset collapsible panel element for one of four states.
+ *
+ * All four variants share the same `element_id` so the patch logic can
+ * locate and replace the element without needing to scan the full card.
+ *
+ * Scheme B (current): finalize does **not** insert a pending panel. The
+ * notifier inserts `completed` / `failed` only when there is something to show.
+ * `pending` / `no_assets` remain for tests and legacy callers.
+ *
+ * - `pending`    — legacy placeholder (unused on the finalize path)
+ * - `completed`  — assets ready; collapsed list
+ * - `no_assets`  — Curator finished with nothing kept (unused; silent by default)
+ * - `failed`     — Curator error
+ */
+export function buildPersonalAssetsPanel(
+  assets: AssetSummary[],
+  state: AssetPanelState = 'completed',
+  failReason?: string,
+): CardElement {
+  // ---- pending ----
+  if (state === 'pending') {
+    return {
+      tag: 'markdown',
+      content: '📦 Saving assets...',
+      i18n_content: {
+        zh_cn: '📦 正在整理资产...',
+        en_us: '📦 Saving assets...',
+      },
+      text_size: 'notation',
+      element_id: ASSET_PANEL_ELEMENT_ID,
+    };
+  }
+
+  // ---- no_assets ----
+  // Unused on the live path (scheme B is silent). Kept for unit tests only.
+  if (state === 'no_assets') {
+    return {
+      tag: 'markdown',
+      content: '📦 No assets saved this run',
+      i18n_content: {
+        zh_cn: '📦 本次未保存资产',
+        en_us: '📦 No assets saved this run',
+      },
+      text_size: 'notation',
+      element_id: ASSET_PANEL_ELEMENT_ID,
+    };
+  }
+
+  // ---- failed ----
+  if (state === 'failed') {
+    const detail = failReason?.trim();
+    const zhMsg = detail ? `📦 资产保存失败：${detail}` : '📦 资产保存失败';
+    const enMsg = detail ? `📦 Asset save failed: ${detail}` : '📦 Asset save failed';
+    return {
+      tag: 'markdown',
+      content: `<font color='red'>${enMsg}</font>`,
+      i18n_content: {
+        zh_cn: `<font color='red'>${zhMsg}</font>`,
+        en_us: `<font color='red'>${enMsg}</font>`,
+      },
+      text_size: 'notation',
+      element_id: ASSET_PANEL_ELEMENT_ID,
+    };
+  }
+
+  // ---- completed ----
+  const count = assets.length;
+  const zhTitle = `📦 已保存 ${count} 个资产 · 查看`;
+  const enTitle = `📦 Saved ${count} asset(s) · View`;
+  const listContent = assets.map(formatAssetLineWithPreview).join('\n');
+
+  return {
+    tag: 'collapsible_panel',
+    expanded: false,
+    header: {
+      title: {
+        tag: 'plain_text',
+        content: enTitle,
+        i18n_content: {
+          zh_cn: zhTitle,
+          en_us: enTitle,
+        },
+        text_color: 'grey',
+        text_size: 'notation',
+      },
+      vertical_align: 'center',
+      icon: {
+        tag: 'standard_icon',
+        token: 'down-small-ccm_outlined',
+        color: 'grey',
+        size: '16px 16px',
+      },
+      icon_position: 'right',
+      icon_expanded_angle: -180,
+    },
+    border: { color: 'grey', corner_radius: '5px' },
+    vertical_spacing: '4px',
+    padding: '8px 8px 8px 8px',
+    elements: [
+      {
+        tag: 'markdown',
+        content: listContent,
+        text_size: 'notation',
+      },
+    ],
+    element_id: ASSET_PANEL_ELEMENT_ID,
+  };
 }

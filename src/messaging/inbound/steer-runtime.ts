@@ -10,14 +10,14 @@
  * harness queue API directly avoids that wait.
  */
 
-export type SteerRuntimeApi = {
+export interface SteerRuntimeApi {
   resolveActiveEmbeddedRunSessionId: (sessionKey: string) => string | undefined;
   queueAgentHarnessMessage: (
     sessionId: string,
     text: string,
     options?: { steeringMode?: 'all'; debounceMs?: number },
   ) => boolean;
-};
+}
 
 export async function loadSteerRuntime(): Promise<SteerRuntimeApi | null> {
   try {

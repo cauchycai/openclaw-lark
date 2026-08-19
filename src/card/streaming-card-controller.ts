@@ -15,6 +15,7 @@ import { readFile } from 'node:fs/promises';
 import { resolveDefaultAgentId } from 'openclaw/plugin-sdk/agent-runtime';
 import type { ReplyPayload } from 'openclaw/plugin-sdk';
 import { SILENT_REPLY_TOKEN } from 'openclaw/plugin-sdk/reply-runtime';
+import { persistCardRef } from '../assets/card-patch';
 import { extractLarkApiCode } from '../core/api-error';
 import { larkLogger } from '../core/lark-logger';
 import { LarkClient } from '../core/lark-client';
@@ -47,7 +48,13 @@ import { FlushController } from './flush-controller';
 import { ImageResolver } from './image-resolver';
 import { optimizeMarkdownStyle } from './markdown-style';
 import { type ToolUseDisplayResult, buildToolUseTitleSuffix, normalizeToolUseDisplay } from './tool-use-display';
-import { clearToolUseTraceRun, getToolUseTraceSteps, recordToolUseEnd, recordToolUseStart } from './tool-use-trace-store';
+import {
+  clearToolUseTraceRun,
+  getToolUseTraceRunId,
+  getToolUseTraceSteps,
+  recordToolUseEnd,
+  recordToolUseStart,
+} from './tool-use-trace-store';
 import type {
   CardKitState,
   CardPhase,
@@ -874,6 +881,23 @@ export class StreamingCardController {
           isCardKit: !!idleEffectiveCardId,
           source,
         });
+
+        // Persist card ref so the asset notifier can patch this card later.
+        // Store the complete card JSON so the notifier never needs im.message.get
+        // (which would return the stale streaming skeleton, not the final card).
+        // Await so assets.ready that arrives immediately after finalize can find the ref.
+        try {
+          await persistCardRef({
+            sessionKey: this.deps.sessionKey,
+            runId: getToolUseTraceRunId(this.deps.sessionKey),
+            cardMessageId: this.cardKit.cardMessageId,
+            cardKitCardId: idleEffectiveCardId ?? undefined,
+            cardKitSequence: idleEffectiveCardId ? this.cardKit.cardKitSequence : undefined,
+            completeCardJson: completeCard as unknown as Record<string, unknown>,
+          });
+        } catch (err: unknown) {
+          log.warn('persistCardRef failed', { error: String(err) });
+        }
       }
     } catch (err) {
       log.warn('final card update failed', { error: String(err) });

@@ -236,7 +236,9 @@ describe('buildCardContent – footer line joining', () => {
   /** Extract footer markdown elements (notation-sized) from the card's top-level elements array. */
   function footerElements(card: ReturnType<typeof buildCardContent>) {
     const elements = (card as { elements?: Array<Record<string, unknown>> }).elements ?? [];
-    return elements.filter((el) => el.tag === 'markdown' && el.text_size === 'notation');
+    return elements.filter(
+      (el) => el.tag === 'markdown' && el.text_size === 'notation' && el.element_id !== 'personal_assets',
+    );
   }
 
   it('merges primary and detail lines into one markdown element with \\n', () => {

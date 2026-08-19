@@ -24,10 +24,13 @@ import { type TypingIndicatorState, addTypingIndicator, removeTypingIndicator } 
 import { createBalanceUsageTracker } from './balance-usage';
 import { buildCardContent, splitReasoningText, stripReasoningTags } from './builder';
 import { isCardTableLimitError } from './card-error';
-import type { FooterSessionMetrics } from './reply-dispatcher-types';
-import type { CreateFeishuReplyDispatcherParams, FeishuReplyDispatcherResult } from './reply-dispatcher-types';
+import type {
+  CreateFeishuReplyDispatcherParams,
+  FeishuReplyDispatcherResult,
+  FooterSessionMetrics,
+} from './reply-dispatcher-types';
 import { expandAutoMode, resolveReplyMode, shouldUseCard } from './reply-mode';
-import { type ToolCommandOutputPayload, type ToolItemEventPayload, StreamingCardController } from './streaming-card-controller';
+import { StreamingCardController, type ToolCommandOutputPayload, type ToolItemEventPayload } from './streaming-card-controller';
 import { UnavailableGuard } from './unavailable-guard';
 
 const log = larkLogger('card/reply-dispatcher');

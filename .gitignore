@@ -5,6 +5,7 @@ node_modules/
 dist/
 release/
 artifacts/
+*.tgz
 src/tools/docs/
 
 *.log

@@ -102,17 +102,28 @@ export function parseEaglelabApiKeyFromShellExport(content: string): string | un
   return parseShellExportVar(content, EAGLELAB_API_KEY_ENV);
 }
 
-function readEaglelabApiKeyFromSandboxProfiles(): string | undefined {
+function readEnvFromSandboxProfiles(varName: string): string | undefined {
   for (const profilePath of SANDBOX_PROFILE_PATHS) {
     if (!profilePath || !existsSync(profilePath)) continue;
     try {
-      const value = parseEaglelabApiKeyFromShellExport(readFileSync(profilePath, 'utf8'));
+      const value = parseShellExportVar(readFileSync(profilePath, 'utf8'), varName);
       if (value) return value;
     } catch {
       continue;
     }
   }
   return undefined;
+}
+
+function readEaglelabApiKeyFromSandboxProfiles(): string | undefined {
+  return readEnvFromSandboxProfiles(EAGLELAB_API_KEY_ENV);
+}
+
+function resolveCoworkApiUrl(): string | undefined {
+  const fromProcess = (process.env[COWORK_API_URL_ENV] ?? '').trim();
+  if (fromProcess) return fromProcess.replace(/\/+$/, '');
+  const fromProfile = normalizeSecret(readEnvFromSandboxProfiles(COWORK_API_URL_ENV));
+  return fromProfile ? fromProfile.replace(/\/+$/, '') : undefined;
 }
 
 export function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined {
@@ -139,10 +150,11 @@ export function resolveUserJwtToken(cfg?: ClawdbotConfig): string | undefined {
 
   if (cfg) {
     const resolved = getResolvedConfig(cfg) as ClawdbotConfig & { env?: Record<string, string> };
-    return normalizeSecret(resolved.env?.[USER_JWT_TOKEN_ENV]);
+    const fromConfigEnv = normalizeSecret(resolved.env?.[USER_JWT_TOKEN_ENV]);
+    if (fromConfigEnv) return fromConfigEnv;
   }
 
-  return undefined;
+  return normalizeSecret(readEnvFromSandboxProfiles(USER_JWT_TOKEN_ENV));
 }
 
 export function resolveEaglelabApiBase(cfg?: ClawdbotConfig): string | undefined {
@@ -170,8 +182,8 @@ export function resolveEaglelabApiBase(cfg?: ClawdbotConfig): string | undefined
 export function resolveOrchestratorUrl(apiBase?: string): string {
   const override = process.env[CLAW_ORCHESTRATOR_URL_ENV]?.trim();
   if (override) return override.replace(/\/+$/, '');
-  const coworkUrl = (process.env[COWORK_API_URL_ENV] ?? '').trim();
-  if (coworkUrl) return coworkUrl.replace(/\/+$/, '');
+  const coworkUrl = resolveCoworkApiUrl();
+  if (coworkUrl) return coworkUrl;
   const normalized = (apiBase ?? process.env[EAGLELAB_API_BASE_ENV] ?? '').trim().toLowerCase();
   if (normalized.includes('test')) {
     return TEST_COWORK_URL;

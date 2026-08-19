@@ -64,6 +64,12 @@ export function hasToolUseTraceRun(sessionKey?: string): boolean {
   return sessionTraces.has(sessionKey);
 }
 
+/** Run id currently represented by the streaming card for this session. */
+export function getToolUseTraceRunId(sessionKey?: string): string | undefined {
+  if (!sessionKey) return undefined;
+  return sessionTraces.get(sessionKey)?.currentRunId;
+}
+
 export function recordToolUseStart(params: {
   sessionKey?: string;
   toolName: string;

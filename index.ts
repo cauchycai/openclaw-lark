@@ -29,6 +29,7 @@ import { larkLogger } from './src/core/lark-logger';
 import { emitSecurityWarnings } from './src/core/security-check';
 import { recordToolUseEnd, recordToolUseStart } from './src/card/tool-use-trace-store';
 import { sanitizeParamsForLog } from './src/card/reasoning-utils';
+import { registerPersonalAssetsNotifier } from './src/assets/notifier';
 
 const log = larkLogger('plugin');
 
@@ -126,6 +127,7 @@ const plugin = {
 
     // Register AskUserQuestion tool (interactive card-based user prompting)
     registerAskUserQuestionTool(api);
+    registerPersonalAssetsNotifier(api);
 
     api.on('before_tool_call', (event, ctx) => {
       recordToolUseStart({
