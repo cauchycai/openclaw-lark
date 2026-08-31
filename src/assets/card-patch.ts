@@ -20,6 +20,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
+import { writeJsonAtomically } from './atomic-json';
 import { updateCardFeishu } from '../messaging/outbound/send';
 import { updateCardKitCard } from '../card/cardkit';
 import { larkLogger } from '../core/lark-logger';
@@ -101,10 +102,7 @@ async function readCardRefs(refPath: string): Promise<CardRef[]> {
 }
 
 async function writeCardRefs(refPath: string, refs: CardRef[]): Promise<void> {
-  const temporary = `${refPath}.tmp`;
-  await fs.mkdir(path.dirname(refPath), { recursive: true });
-  await fs.writeFile(temporary, JSON.stringify(refs), { mode: 0o600 });
-  await fs.rename(temporary, refPath);
+  await writeJsonAtomically(refPath, refs);
 }
 
 // ---------------------------------------------------------------------------

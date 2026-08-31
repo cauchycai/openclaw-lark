@@ -12,6 +12,7 @@
 import { promises as fs, watch } from 'node:fs';
 import path from 'node:path';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
+import { writeJsonAtomically } from './atomic-json';
 import { getLarkAccount } from '../core/accounts';
 import {
   clearOrchestratorAuthCache,
@@ -190,10 +191,7 @@ export async function readPending(statePath: string): Promise<DeliveryTarget[]> 
 }
 
 export async function writePending(statePath: string, pending: Iterable<DeliveryTarget>): Promise<void> {
-  const temporary = `${statePath}.tmp`;
-  await fs.mkdir(path.dirname(statePath), { recursive: true });
-  await fs.writeFile(temporary, JSON.stringify([...pending]), { mode: 0o600 });
-  await fs.rename(temporary, statePath);
+  await writeJsonAtomically(statePath, [...pending]);
 }
 
 export async function readDeliveredRunIds(deliveredPath: string): Promise<Set<string>> {
@@ -240,10 +238,7 @@ export async function markDeliveredRun(deliveredPath: string, runId: string): Pr
     ...existing.filter((row) => row.runId !== trimmed),
     { runId: trimmed, deliveredAt: Date.now() },
   ];
-  const temporary = `${deliveredPath}.tmp`;
-  await fs.mkdir(path.dirname(deliveredPath), { recursive: true });
-  await fs.writeFile(temporary, JSON.stringify(next), { mode: 0o600 });
-  await fs.rename(temporary, deliveredPath);
+  await writeJsonAtomically(deliveredPath, next);
 }
 
 export async function removeDeliveryTarget(statePath: string, runId: string): Promise<void> {
@@ -324,7 +319,11 @@ export function registerPersonalAssetsNotifier(api: OpenClawPluginApi): void {
   const deliveredFile = () => resolveDeliveredStateFile(serviceStateDir);
 
   const persist = async () => {
-    await writePending(stateFile(), pending.values());
+    try {
+      await writePending(stateFile(), pending.values());
+    } catch (error) {
+      api.logger.warn(`personal-assets: failed to persist Feishu card queue: ${String(error)}`);
+    }
   };
 
   const reloadPending = async () => {
@@ -512,6 +511,8 @@ export function registerPersonalAssetsNotifier(api: OpenClawPluginApi): void {
         }
       }
       if (mutated) await persist();
+    } catch (error) {
+      api.logger.warn(`personal-assets: Feishu card flush failed: ${String(error)}`);
     } finally {
       flushing = false;
     }

@@ -111,6 +111,20 @@ describe('personal asset notifier queue', () => {
     expect(rows).toEqual([{ runId: 'run-new', to: 'ou_new', createdAt: 2 }]);
   });
 
+  test('concurrent writePending calls do not throw rename ENOENT', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'pa-notifier-'));
+    const stateFile = path.join(tempDir, 'personal-assets-feishu-notifier.json');
+    const writers = Array.from({ length: 40 }, (_, index) =>
+      writePending(stateFile, [
+        { runId: `run-${index}`, to: `ou_${index}`, createdAt: index },
+      ]),
+    );
+    await expect(Promise.all(writers)).resolves.toBeDefined();
+    const rows = await readPending(stateFile);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.runId).toMatch(/^run-\d+$/);
+  });
+
   test('upsertDeliveryTarget skips runs already marked delivered', async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'pa-notifier-'));
     const stateFile = path.join(tempDir, 'personal-assets-feishu-notifier.json');
@@ -157,6 +171,25 @@ describe('personal asset notifier queue', () => {
       stateDir: tempDir,
     });
     expect(result).toEqual({ ok: false, reason: 'waiting_for_card' });
+  });
+
+  test('concurrent persistCardRef calls do not throw rename ENOENT', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'pa-notifier-'));
+    const sessionKey = 'agent:main:feishu:feishu-x:direct:ou_x';
+    const writers = Array.from({ length: 40 }, (_, index) =>
+      persistCardRef(
+        {
+          runId: `run-${index}`,
+          sessionKey,
+          cardMessageId: `om_${index}`,
+          completeCardJson: { elements: [{ tag: 'markdown', content: String(index) }] },
+        },
+        { stateDir: tempDir },
+      ),
+    );
+    await expect(Promise.all(writers)).resolves.toBeDefined();
+    const ref = await getCardRef(sessionKey, { stateDir: tempDir });
+    expect(ref?.cardMessageId).toMatch(/^om_\d+$/);
   });
 
   test('persistCardRef stores cardKitSequence for later CardKit patches', async () => {
