@@ -12,7 +12,7 @@
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 import type { FeishuMediaInfo, ResourceDescriptor } from '../types';
 import { LarkClient } from '../../core/lark-client';
-import { downloadMessageResourceFeishu, isOversizeResourceError } from '../outbound/media';
+import { downloadMessageResourceFeishu, isOversizeResourceError, repairFeishuFileName } from '../outbound/media';
 
 // ---------------------------------------------------------------------------
 // Resource-descriptor-based download
@@ -69,7 +69,10 @@ export async function downloadResources(params: {
         contentType = await core.media.detectMime({ buffer: result.buffer });
       }
 
-      const fileName = result.fileName || res.fileName;
+      // Prefer the message JSON name, but repair latin1-mojibake on either
+      // source. OpenClaw keeps \p{L} as-is, so garbled latin1 letters would
+      // otherwise be written to disk unchanged.
+      const fileName = repairFeishuFileName(res.fileName) || repairFeishuFileName(result.fileName);
       const saved = await core.channel.media.saveMediaBuffer(result.buffer, contentType, 'inbound', maxBytes, fileName);
 
       const placeholder = inferPlaceholderFromType(res.type);

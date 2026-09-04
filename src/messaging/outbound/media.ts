@@ -410,20 +410,82 @@ export async function downloadMessageResourceFeishu(params: {
 
   const { buffer, contentType } = await extractBufferFromResponse(response);
 
-  // Attempt to extract file name from response headers.
-  let fileName: string | undefined;
-  if (response && typeof response === 'object') {
-    const resp = response as Record<string, any>;
-    const disposition = resp.headers?.['content-disposition'] ?? resp.headers?.['Content-Disposition'];
-    if (typeof disposition === 'string') {
-      const match = disposition.match(/filename[*]?=(?:UTF-8'')?["']?([^"';\n]+)/i);
-      if (match) {
-        fileName = decodeURIComponent(match[1].trim());
-      }
-    }
-  }
+  const disposition = readContentDispositionHeader(response);
+  const fileName = disposition ? parseContentDispositionFileName(disposition) : undefined;
 
   return { buffer, contentType, fileName };
+}
+
+function readContentDispositionHeader(response: unknown): string | undefined {
+  if (!response || typeof response !== 'object') return undefined;
+  const resp = response as Record<string, any>;
+  const sources = [resp.headers, resp.header, resp.data?.headers, resp.file?.headers];
+  for (const headers of sources) {
+    const raw = readHeaderValue(headers, 'content-disposition');
+    if (raw) return raw;
+  }
+  return undefined;
+}
+
+function readHeaderValue(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const rec = headers as Record<string, unknown> & { get?: (key: string) => unknown };
+  const titled = name
+    .split('-')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('-');
+  const raw = rec[name] ?? rec[titled] ?? rec.get?.(name);
+  if (typeof raw === 'string' && raw) return raw;
+  if (Array.isArray(raw) && typeof raw[0] === 'string' && raw[0]) return raw[0];
+  return undefined;
+}
+
+export function parseContentDispositionFileName(disposition: string): string | undefined {
+  const star = disposition.match(/filename\*\s*=\s*([^;]+)/i);
+  if (star?.[1]) {
+    const decoded = decodeRfc5987Filename(star[1]);
+    if (decoded) return decoded;
+  }
+
+  const quoted = disposition.match(/filename\s*=\s*"((?:\\.|[^"\\])*)"/i);
+  const unquoted = !quoted ? disposition.match(/filename\s*=\s*([^;]+)/i) : undefined;
+  const raw = quoted?.[1]?.replace(/\\"/g, '"') ?? unquoted?.[1]?.trim();
+  if (!raw) return undefined;
+  return decodeLegacyDispositionFilename(raw);
+}
+
+export function repairFeishuFileName(name: string | undefined): string | undefined {
+  if (!name) return undefined;
+  return decodeLatin1Utf8Mojibake(name);
+}
+
+function decodeRfc5987Filename(value: string): string | undefined {
+  const trimmed = value.trim().replace(/^["']|["']$/g, '');
+  const match = trimmed.match(/^(?:UTF-8'')?(.+)$/i);
+  if (!match?.[1]) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+function decodeLegacyDispositionFilename(value: string): string {
+  let name = value;
+  try {
+    name = decodeURIComponent(name);
+  } catch {
+    // Keep the pre-decode value when it is not percent-encoded.
+  }
+  return decodeLatin1Utf8Mojibake(name);
+}
+
+function decodeLatin1Utf8Mojibake(name: string): string {
+  const buf = Buffer.from(name, 'latin1');
+  const asUtf8 = buf.toString('utf8');
+  if (asUtf8 === name || asUtf8.includes('\uFFFD')) return name;
+  if (!Buffer.from(asUtf8, 'utf8').equals(buf)) return name;
+  return asUtf8;
 }
 
 // ---------------------------------------------------------------------------
