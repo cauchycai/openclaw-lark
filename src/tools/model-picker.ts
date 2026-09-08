@@ -27,7 +27,7 @@ import {
   getCachedModelCatalog,
   listModelCatalog,
 } from '../core/model-catalog';
-import { MODEL_PROVIDER_ID } from '../core/orchestrator-models';
+import { MODEL_PROVIDER_ID, MODEL_RESPONSES_PROVIDER_ID } from '../core/orchestrator-models';
 import { dispatchSyntheticTextMessage } from '../messaging/inbound/synthetic-message';
 import { sendCardFeishu, sendMessageFeishu } from '../messaging/outbound/send';
 
@@ -135,7 +135,7 @@ interface CardActionPayload {
   open_message_id?: string;
   context?: { open_chat_id?: string; open_message_id?: string };
   action?: {
-    value?: { action?: string; model_id?: string; thinking_level?: string } | string;
+    value?: { action?: string; model_id?: string; model_ref?: string; thinking_level?: string } | string;
   };
 }
 
@@ -163,8 +163,18 @@ function formatButtonLabel(entry: ModelCatalogEntry, isCurrent: boolean): string
   return isCurrent ? `✅ ${entry.label}` : entry.label;
 }
 
-function formatModelCommand(modelId: string): string {
-  return `/model ${MODEL_PROVIDER_ID}/${modelId.trim()}`;
+function formatModelCommand(params: {
+  modelId: string;
+  modelRef?: string;
+  entries?: ModelCatalogEntry[];
+}): string {
+  const explicit = params.modelRef?.trim();
+  if (explicit) return `/model ${explicit}`;
+  const fromCatalog = params.entries?.length
+    ? findCatalogEntryByModelId(params.modelId, params.entries)?.ref
+    : undefined;
+  if (fromCatalog) return `/model ${fromCatalog}`;
+  return `/model ${MODEL_PROVIDER_ID}/${params.modelId.trim()}`;
 }
 
 function formatThinkingCommand(level: string): string {
@@ -308,10 +318,11 @@ export function resolveCatalogModelIdFromSessionModelRef(
   const byRef = findCatalogEntryByRef(fullRef, entries);
   if (byRef) return byRef.modelId;
 
-  if (provider !== MODEL_PROVIDER_ID) {
-    const eaglelabRef = `${MODEL_PROVIDER_ID}/${model}`;
-    const byEaglelabRef = findCatalogEntryByRef(eaglelabRef, entries);
-    if (byEaglelabRef) return byEaglelabRef.modelId;
+  for (const fallbackProvider of [MODEL_PROVIDER_ID, MODEL_RESPONSES_PROVIDER_ID]) {
+    if (provider === fallbackProvider) continue;
+    const fallbackRef = `${fallbackProvider}/${model}`;
+    const byFallbackRef = findCatalogEntryByRef(fallbackRef, entries);
+    if (byFallbackRef) return byFallbackRef.modelId;
   }
 
   const tail = model.split('/').pop() ?? model;
@@ -357,6 +368,7 @@ export function buildModelPickerCard(params: {
     value: {
       action: ACTION_SET_MODEL,
       model_id: entry.modelId,
+      model_ref: entry.ref,
     },
   }));
 
@@ -624,6 +636,7 @@ export function handleModelPickerAction(
 ): unknown | undefined {
   let action: string | undefined;
   let modelId: string | undefined;
+  let modelRef: string | undefined;
   let thinkingLevel: ThinkingLevel | undefined;
   let senderOpenId: string | undefined;
   let openChatId: string | undefined;
@@ -634,10 +647,16 @@ export function handleModelPickerAction(
     const rawValue = event.action?.value;
     const value =
       typeof rawValue === 'string'
-        ? (JSON.parse(rawValue) as { action?: string; model_id?: string; thinking_level?: string })
+        ? (JSON.parse(rawValue) as {
+            action?: string;
+            model_id?: string;
+            model_ref?: string;
+            thinking_level?: string;
+          })
         : rawValue;
     action = value?.action;
     modelId = typeof value?.model_id === 'string' ? value.model_id.trim() : undefined;
+    modelRef = typeof value?.model_ref === 'string' ? value.model_ref.trim() : undefined;
     thinkingLevel = normalizeThinkingLevel(value?.thinking_level);
     senderOpenId = resolveCardCallbackOperatorId(event.operator);
     openChatId = event.open_chat_id ?? event.context?.open_chat_id;
@@ -660,7 +679,13 @@ export function handleModelPickerAction(
   const syntheticMessageId = `${openMessageId ?? senderOpenId}:${action}:${modelId ?? thinkingLevel}:${Date.now()}`;
   const chatId = openChatId ?? senderOpenId;
   const syntheticText =
-    action === ACTION_SET_MODEL ? formatModelCommand(modelId!) : formatThinkingCommand(thinkingLevel!);
+    action === ACTION_SET_MODEL
+      ? formatModelCommand({
+          modelId: modelId!,
+          modelRef,
+          entries: cachedCatalog?.entries,
+        })
+      : formatThinkingCommand(thinkingLevel!);
 
   setImmediate(() => {
     void dispatchSyntheticTextMessage({

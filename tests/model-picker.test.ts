@@ -122,6 +122,25 @@ describe('resolveCatalogModelIdFromSessionEntry', () => {
     ).toBe('turing-claw/glm');
   });
 
+  it('maps eaglelab-responses session ref to catalog model_id', () => {
+    const entries = [
+      ...SAMPLE_ENTRIES,
+      {
+        modelId: 'turing/gpt-6-astra',
+        name: 'GPT-6 Astra',
+        label: 'GPT-6 Astra · 1.0x cost',
+        ref: 'eaglelab-responses/turing/gpt-6-astra',
+        isPrimary: false,
+      },
+    ];
+    expect(
+      resolveCatalogModelIdFromSessionModelRef(
+        { provider: 'eaglelab-responses', model: 'turing/gpt-6-astra' },
+        entries,
+      ),
+    ).toBe('turing/gpt-6-astra');
+  });
+
   it('resolves tail segment when session stores short model id', () => {
     expect(
       resolveCatalogModelIdFromSessionModelRef({ provider: 'eaglelab', model: 'glm' }, SAMPLE_ENTRIES),
@@ -173,7 +192,11 @@ describe('buildModelPickerCard', () => {
     const buttons = elements.filter((el) => el.tag === 'button');
     expect(buttons[0]).toMatchObject({
       type: 'primary',
-      value: { action: ACTION_SET_MODEL, model_id: 'turing-claw/glm' },
+      value: {
+        action: ACTION_SET_MODEL,
+        model_id: 'turing-claw/glm',
+        model_ref: 'eaglelab/turing-claw/glm',
+      },
     });
     expect((buttons[0].text as { content: string }).content).toBe('✅ glm-5.1 · 1.0x cost');
     expect(card.header).toMatchObject({
@@ -342,6 +365,70 @@ describe('handleModelPickerAction', () => {
     expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         text: '/model eaglelab/turing-claw/new-model',
+      }),
+    );
+  });
+
+  it('injects catalog OpenClaw ref for Responses models', async () => {
+    mockListAvailableModelsFromOrchestrator.mockResolvedValue({
+      entries: [
+        {
+          modelId: 'turing/gpt-6-astra',
+          name: 'GPT-6 Astra',
+          label: 'GPT-6 Astra · 1.0x cost',
+          ref: 'eaglelab-responses/turing/gpt-6-astra',
+          isPrimary: false,
+        },
+      ],
+    });
+    await listModelCatalog({} as never);
+
+    handleModelPickerAction(
+      {
+        operator: { open_id: 'ou_user_1' },
+        open_chat_id: 'oc_chat_1',
+        action: { value: { action: ACTION_SET_MODEL, model_id: 'turing/gpt-6-astra' } },
+      },
+      {} as never,
+      'feishu-a1',
+    );
+
+    await vi.runAllTimersAsync();
+    expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '/model eaglelab-responses/turing/gpt-6-astra',
+      }),
+    );
+  });
+
+  it('prefers card model_ref over the Completions fallback', async () => {
+    const result = handleModelPickerAction(
+      {
+        operator: { open_id: 'ou_user_1' },
+        open_chat_id: 'oc_chat_1',
+        action: {
+          value: {
+            action: ACTION_SET_MODEL,
+            model_id: 'turing/gpt-6-astra',
+            model_ref: 'eaglelab-responses/turing/gpt-6-astra',
+          },
+        },
+      },
+      {} as never,
+      'feishu-a1',
+    );
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Switched to turing/gpt-6-astra',
+      },
+    });
+    await vi.runAllTimersAsync();
+    expect(mockListAvailableModelsFromOrchestrator).not.toHaveBeenCalled();
+    expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '/model eaglelab-responses/turing/gpt-6-astra',
       }),
     );
   });

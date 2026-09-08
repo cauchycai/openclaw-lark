@@ -25,8 +25,18 @@ export const COWORK_API_URL_ENV = 'COWORK_API_URL';
 export const USER_JWT_TOKEN_ENV = 'USER_JWT_TOKEN';
 const LIVE_COWORK_URL = 'https://live-cowork.tcljd.com';
 const TEST_COWORK_URL = 'https://test-cowork.tcljd.com';
-/** OpenClaw provider id for orchestrator-managed models (fixed; matches orchestrator merge). */
+/** OpenClaw provider id for Completions models (matches orchestrator merge). */
 export const MODEL_PROVIDER_ID = 'eaglelab';
+/** OpenClaw provider id for Responses models (matches orchestrator merge). */
+export const MODEL_RESPONSES_PROVIDER_ID = `${MODEL_PROVIDER_ID}-responses`;
+
+export function openclawRuntimeProviderId(api?: string): string {
+  const value = (api ?? '').trim().toLowerCase();
+  if (value === 'openai-responses' || value === 'responses' || value === 'response' || value === 'openai-response') {
+    return MODEL_RESPONSES_PROVIDER_ID;
+  }
+  return MODEL_PROVIDER_ID;
+}
 
 /** In-memory catalog/JWT cache TTL (not persisted to disk). */
 export const MODEL_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -59,6 +69,7 @@ interface OrchestratorModelRecord {
   enabled?: boolean;
   is_primary?: boolean;
   cost_multiplier?: number;
+  api?: string;
 }
 
 interface OrchestratorModelsResponse {
@@ -135,7 +146,10 @@ export function resolveEaglelabApiKey(cfg?: ClawdbotConfig): string | undefined 
       models?: { providers?: Record<string, { apiKey?: string }> };
       env?: Record<string, string>;
     };
-    const fromProvider = normalizeSecret(resolved.models?.providers?.eaglelab?.apiKey);
+    const providers = resolved.models?.providers ?? {};
+    const fromProvider =
+      normalizeSecret(providers[MODEL_PROVIDER_ID]?.apiKey) ??
+      normalizeSecret(providers[MODEL_RESPONSES_PROVIDER_ID]?.apiKey);
     if (fromProvider) return fromProvider;
     const fromConfigEnv = normalizeSecret(resolved.env?.[EAGLELAB_API_KEY_ENV]);
     if (fromConfigEnv) return fromConfigEnv;
@@ -168,7 +182,9 @@ export function resolveEaglelabApiBase(cfg?: ClawdbotConfig): string | undefined
     };
     const fromCfgEnv = normalizeSecret(resolved.env?.[EAGLELAB_API_BASE_ENV]);
     if (fromCfgEnv) return fromCfgEnv;
-    const fromProvider = resolved.models?.providers?.eaglelab?.baseUrl;
+    const providers = resolved.models?.providers ?? {};
+    const fromProvider =
+      providers[MODEL_PROVIDER_ID]?.baseUrl ?? providers[MODEL_RESPONSES_PROVIDER_ID]?.baseUrl;
     if (typeof fromProvider === 'string') {
       const trimmed = fromProvider.trim();
       if (trimmed && !/^\$\{[^}]+\}$/u.test(trimmed)) return trimmed;
@@ -269,7 +285,7 @@ function mapOrchestratorModel(record: OrchestratorModelRecord): ModelCatalogEntr
     modelId,
     name,
     label: formatModelLabel(name, normalizeCostMultiplier(record.cost_multiplier)),
-    ref: `${MODEL_PROVIDER_ID}/${modelId}`,
+    ref: `${openclawRuntimeProviderId(record.api)}/${modelId}`,
     isPrimary: record.is_primary === true,
   };
 }

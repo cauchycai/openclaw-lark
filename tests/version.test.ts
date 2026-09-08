@@ -4,11 +4,11 @@ import { getPluginVersion, getPluginVersionDisplay, getUserAgent } from '../src/
 
 describe('version metadata', () => {
   it('keeps the upstream package version and shows fork metadata separately', () => {
-    expect(getPluginVersion()).toBe('2026.9.3');
-    expect(getPluginVersionDisplay()).toBe('upstream 2026.9.3 / fork turingclaw 2026.9.3.1');
+    expect(getPluginVersion()).toBe('2026.9.7');
+    expect(getPluginVersionDisplay()).toBe('upstream 2026.9.7 / fork turingclaw 2026.9.7.1');
   });
 
   it('includes fork metadata in the User-Agent without spaces', () => {
-    expect(getUserAgent()).toMatch(/^openclaw-lark\/2026\.9\.3\+turingclaw-2026\.9\.3\.1\/(?:mac|linux|windows)$/u);
+    expect(getUserAgent()).toMatch(/^openclaw-lark\/2026\.9\.7\+turingclaw-2026\.9\.7\.1\/(?:mac|linux|windows)$/u);
   });
 });

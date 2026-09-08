@@ -15,6 +15,7 @@ import {
   parseEaglelabApiKeyFromShellExport,
   resolveEaglelabApiBase,
   resolveOrchestratorUrl,
+  openclawRuntimeProviderId,
 } from '../src/core/orchestrator-models';
 
 describe('parseEaglelabApiKeyFromShellExport', () => {
@@ -41,6 +42,18 @@ describe('parseEaglelabApiKeyFromShellExport', () => {
 describe('formatModelLabel', () => {
   it('formats cost multiplier', () => {
     expect(formatModelLabel('kimi-k2.6', 1)).toBe('kimi-k2.6 · 1.0x cost');
+  });
+});
+
+describe('openclawRuntimeProviderId', () => {
+  it('maps Completions api to eaglelab', () => {
+    expect(openclawRuntimeProviderId()).toBe('eaglelab');
+    expect(openclawRuntimeProviderId('openai-completions')).toBe('eaglelab');
+  });
+
+  it('maps Responses api to eaglelab-responses', () => {
+    expect(openclawRuntimeProviderId('openai-responses')).toBe('eaglelab-responses');
+    expect(openclawRuntimeProviderId('responses')).toBe('eaglelab-responses');
   });
 });
 
@@ -160,6 +173,13 @@ describe('listAvailableModelsFromOrchestrator', () => {
               cost_multiplier: 1,
             },
             {
+              model_id: 'turing/gpt-6-astra',
+              name: 'GPT-6 Astra',
+              enabled: true,
+              api: 'openai-responses',
+              cost_multiplier: 1,
+            },
+            {
               model_id: 'turing-claw/disabled',
               name: 'disabled-model',
               enabled: false,
@@ -176,6 +196,13 @@ describe('listAvailableModelsFromOrchestrator', () => {
         name: 'kimi-k2.6',
         label: 'kimi-k2.6 · 1.0x cost',
         ref: 'eaglelab/turing-claw/kimi',
+        isPrimary: false,
+      },
+      {
+        modelId: 'turing/gpt-6-astra',
+        name: 'GPT-6 Astra',
+        label: 'GPT-6 Astra · 1.0x cost',
+        ref: 'eaglelab-responses/turing/gpt-6-astra',
         isPrimary: false,
       },
     ]);
