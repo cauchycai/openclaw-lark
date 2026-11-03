@@ -1,4 +1,11 @@
+import { execFile } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn((_file: string, _args: string[], _options: unknown, callback?: (err: null, stdout: string, stderr: string) => void) => {
+    callback?.(null, '', '');
+  }),
+}));
 
 vi.mock('../src/core/lark-logger', () => ({
   larkLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -27,6 +34,7 @@ vi.mock('../src/messaging/inbound/synthetic-message', () => ({
 
 import {
   ACTION_SET_MODEL,
+  ACTION_SET_THINKING,
   MENU_EVENT_KEY_PICK_MODEL,
   buildModelPickerCard,
   handleMenuPickModelEvent,
@@ -35,6 +43,13 @@ import {
   resolveCatalogModelIdFromSessionModelRef,
 } from '../src/tools/model-picker';
 import { clearModelCatalogCache, findPrimaryModelEntry, listModelCatalog } from '../src/core/model-catalog';
+
+function thinkingButtonLabels(card: Record<string, unknown>): string[] {
+  const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+  const row = elements.find((element) => element.tag === 'column_set');
+  const columns = (row?.columns ?? []) as Array<{ elements: Array<{ text?: { content?: string } }> }>;
+  return columns.map((column) => column.elements[0]?.text?.content ?? '');
+}
 
 const SAMPLE_ENTRIES = [
   {
@@ -201,8 +216,11 @@ describe('buildModelPickerCard', () => {
     expect((buttons[0].text as { content: string }).content).toBe('✅ glm-5.1 · 1.0x cost');
     expect(card.header).toMatchObject({
       subtitle: {
-        content: 'Current: glm-5.1',
-        i18n_content: { zh_cn: '当前：glm-5.1', en_us: 'Current: glm-5.1' },
+        content: 'Current: glm-5.1 · Thinking: Light thinking',
+        i18n_content: {
+          zh_cn: '当前：glm-5.1 · 思考：轻度思考',
+          en_us: 'Current: glm-5.1 · Thinking: Light thinking',
+        },
       },
     });
   });
@@ -211,14 +229,42 @@ describe('buildModelPickerCard', () => {
     const card = buildModelPickerCard({ entries: SAMPLE_ENTRIES });
     expect(card.header).toMatchObject({
       subtitle: {
-        content: 'Current: Turing Default Model',
-        i18n_content: { zh_cn: '当前：Turing Default Model', en_us: 'Current: Turing Default Model' },
+        content: 'Current: Turing Default Model · Thinking: Light thinking',
+        i18n_content: {
+          zh_cn: '当前：Turing Default Model · 思考：轻度思考',
+          en_us: 'Current: Turing Default Model · Thinking: Light thinking',
+        },
       },
     });
     const buttons = (card.body as { elements: Array<Record<string, unknown>> }).elements.filter(
       (el) => el.tag === 'button',
     );
     expect(buttons[1]).toMatchObject({ type: 'primary' });
+  });
+
+  it('shows an empty thinking level as Light thinking', () => {
+    const card = buildModelPickerCard({
+      entries: SAMPLE_ENTRIES,
+      currentModelId: 'turing-claw/default',
+      currentThinkingLevel: undefined,
+    });
+    const labels = thinkingButtonLabels(card);
+    expect(labels).toEqual(['Quick answer', '✅ Light thinking', 'Medium thinking', 'Deep thinking']);
+  });
+
+  it('keeps Medium thinking selected and folds xhigh into Deep thinking', () => {
+    const medium = buildModelPickerCard({
+      entries: SAMPLE_ENTRIES,
+      currentThinkingLevel: 'medium',
+    });
+    expect(thinkingButtonLabels(medium)).toContain('✅ Medium thinking');
+
+    const extraHigh = buildModelPickerCard({
+      entries: SAMPLE_ENTRIES,
+      currentThinkingLevel: 'xhigh',
+    });
+    expect(thinkingButtonLabels(extraHigh)).toContain('✅ Deep thinking');
+    expect(thinkingButtonLabels(extraHigh)).not.toContain('✅ Quick answer');
   });
 });
 
@@ -430,6 +476,37 @@ describe('handleModelPickerAction', () => {
       expect.objectContaining({
         text: '/model eaglelab-responses/turing/gpt-6-astra',
       }),
+    );
+  });
+
+  it('sets the current session and the long-term thinking default', async () => {
+    vi.mocked(execFile).mockClear();
+    const result = handleModelPickerAction(
+      {
+        operator: { open_id: 'ou_user_1' },
+        open_chat_id: 'oc_chat_1',
+        action: { value: { action: ACTION_SET_THINKING, thinking_level: 'medium' } },
+      },
+      {} as never,
+      'feishu-a1',
+    );
+
+    expect(result).toMatchObject({
+      toast: {
+        type: 'success',
+        content: 'Thinking set to Medium thinking',
+        i18n: { zh_cn: '思考强度已设为 中度思考', en_us: 'Thinking set to Medium thinking' },
+      },
+    });
+    await vi.runAllTimersAsync();
+    expect(mockDispatchSyntheticTextMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '/think medium' }),
+    );
+    expect(execFile).toHaveBeenCalledWith(
+      'openclaw',
+      ['config', 'set', 'agents.defaults.thinkingDefault', 'medium'],
+      expect.objectContaining({ timeout: 30_000 }),
+      expect.any(Function),
     );
   });
 });

@@ -5,9 +5,12 @@
  * Feishu dynamic model picker:
  * - application.bot.menu_v6 (event_key=turingclaw_pick_model) → send card
  * - card.action.trigger (action=set_model) → inject /model ref
- * - card.action.trigger (action=set_thinking) → inject /think level
+ * - card.action.trigger (action=set_thinking) → inject /think level and
+ *   persist agents.defaults.thinkingDefault for later sessions
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { ClawdbotConfig } from 'openclaw/plugin-sdk';
 import {
   resolveDefaultAgentId,
@@ -32,6 +35,7 @@ import { dispatchSyntheticTextMessage } from '../messaging/inbound/synthetic-mes
 import { sendCardFeishu, sendMessageFeishu } from '../messaging/outbound/send';
 
 const log = larkLogger('tools/model-picker');
+const execFileAsync = promisify(execFile);
 
 export const MENU_EVENT_KEY_PICK_MODEL = 'turingclaw_pick_model';
 export const ACTION_SET_MODEL = 'set_model';
@@ -74,6 +78,7 @@ const CARD_TEXTS = {
 const THINKING_LEVELS = [
   { value: 'off', zh: '快速回答', en: 'Quick answer' },
   { value: 'low', zh: '轻度思考', en: 'Light thinking' },
+  { value: 'medium', zh: '中度思考', en: 'Medium thinking' },
   { value: 'high', zh: '深度思考', en: 'Deep thinking' },
 ] as const;
 
@@ -177,21 +182,60 @@ function formatModelCommand(params: {
   return `/model ${MODEL_PROVIDER_ID}/${params.modelId.trim()}`;
 }
 
-function formatThinkingCommand(level: string): string {
-  return `/think ${normalizeThinkingLevel(level) ?? 'off'}`;
+function formatThinkingCommand(level: ThinkingLevel): string {
+  return `/think ${level}`;
 }
 
-function normalizeThinkingLevel(value: unknown): ThinkingLevel | undefined {
-  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (raw === 'none' || raw === 'false' || raw === 'disabled') return 'off';
-  if (THINKING_LEVELS.some((level) => level.value === raw)) return raw as ThinkingLevel;
-  return undefined;
+function readThinkingButtonValue(value: unknown): ThinkingLevel | undefined {
+  if (typeof value !== 'string') return undefined;
+  const raw = value.trim().toLowerCase();
+  return THINKING_LEVELS.find((level) => level.value === raw)?.value;
+}
+
+/**
+ * Button values are off / low / medium / high.
+ * Stored OpenClaw levels outside that set fold onto the nearest button.
+ * Empty means the session never chose one; that runtime default is low.
+ */
+const THINKING_LEVEL_ALIASES: Record<string, ThinkingLevel> = {
+  off: 'off',
+  none: 'off',
+  false: 'off',
+  disabled: 'off',
+  '0': 'off',
+  minimal: 'low',
+  min: 'low',
+  on: 'low',
+  enable: 'low',
+  enabled: 'low',
+  think: 'low',
+  low: 'low',
+  adaptive: 'low',
+  auto: 'low',
+  medium: 'medium',
+  mid: 'medium',
+  med: 'medium',
+  median: 'medium',
+  high: 'high',
+  xhigh: 'high',
+  extrahigh: 'high',
+  ultra: 'high',
+  ultrathink: 'high',
+  max: 'high',
+  highest: 'high',
+};
+
+function normalizeThinkingLevel(value: unknown): ThinkingLevel {
+  if (typeof value !== 'string') return 'low';
+  const collapsed = value.trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (!collapsed) return 'low';
+  return THINKING_LEVEL_ALIASES[collapsed] ?? 'low';
 }
 
 function thinkingLabel(level: string | undefined, locale: Locale): string {
-  const normalized = normalizeThinkingLevel(level) ?? 'off';
+  const normalized = normalizeThinkingLevel(level);
   const entry = THINKING_LEVELS.find((item) => item.value === normalized);
-  return locale === 'zh_cn' ? entry?.zh ?? '快速回答' : entry?.en ?? 'Quick answer';
+  return locale === 'zh_cn' ? entry?.zh ?? '轻度思考' : entry?.en ?? 'Light thinking';
 }
 
 /** Model id namespace stored mistakenly as providerOverride in older sessions. */
@@ -350,7 +394,7 @@ export function buildModelPickerCard(params: {
   const zh = CARD_TEXTS.zh_cn;
   const en = CARD_TEXTS.en_us;
   const effectiveCurrentModelId = currentModelId ?? findPrimaryModelEntry(entries)?.modelId;
-  const effectiveThinkingLevel = normalizeThinkingLevel(currentThinkingLevel) ?? 'off';
+  const effectiveThinkingLevel = normalizeThinkingLevel(currentThinkingLevel);
   const currentEntry = effectiveCurrentModelId
     ? findModelEntry(entries, effectiveCurrentModelId)
     : undefined;
@@ -440,6 +484,49 @@ function getLarkRuntimeSafe(): typeof LarkClient.runtime | undefined {
   } catch {
     return undefined;
   }
+}
+
+type GatewayRequest = (method: string, params: Record<string, unknown>) => Promise<unknown>;
+
+function getRuntimeGatewayRequest(): GatewayRequest | undefined {
+  const runtime = getLarkRuntimeSafe() as
+    | { gateway?: { request?: GatewayRequest; call?: GatewayRequest } }
+    | undefined;
+  return runtime?.gateway?.request ?? runtime?.gateway?.call;
+}
+
+function readConfigBaseHash(snapshot: unknown): string | undefined {
+  if (!snapshot || typeof snapshot !== 'object') return undefined;
+  const hash =
+    (snapshot as { hash?: unknown; baseHash?: unknown }).hash ??
+    (snapshot as { baseHash?: unknown }).baseHash;
+  return typeof hash === 'string' && hash.trim() ? hash.trim() : undefined;
+}
+
+function buildThinkingDefaultPatch(level: ThinkingLevel): Record<string, unknown> {
+  return { agents: { defaults: { thinkingDefault: level } } };
+}
+
+async function runOpenClaw(args: string[]): Promise<void> {
+  const binary = process.env.OPENCLAW_BIN?.trim() || 'openclaw';
+  await execFileAsync(binary, args, { timeout: 30_000 });
+}
+
+/** Current session still follows /think. This keeps later sessions on the same level. */
+async function persistThinkingDefault(level: ThinkingLevel): Promise<void> {
+  const patch = buildThinkingDefaultPatch(level);
+  const request = getRuntimeGatewayRequest();
+  if (request) {
+    const snapshot = await request('config.get', {});
+    const baseHash = readConfigBaseHash(snapshot);
+    if (!baseHash) throw new Error('config.get returned no base hash');
+    await request('config.patch', {
+      raw: JSON.stringify(patch),
+      baseHash,
+    });
+    return;
+  }
+  await runOpenClaw(['config', 'set', 'agents.defaults.thinkingDefault', level]);
 }
 
 type SessionStore = ReturnType<typeof loadSessionStore>;
@@ -538,7 +625,7 @@ function resolveCurrentModelIdFromSessionContext(params: {
 
 function resolveCurrentThinkingLevelFromSessionContext(
   sessionCtx: SessionPickerContext | undefined,
-): ThinkingLevel | undefined {
+): ThinkingLevel {
   return normalizeThinkingLevel(sessionCtx?.sessionEntry?.thinkingLevel);
 }
 
@@ -657,7 +744,7 @@ export function handleModelPickerAction(
     action = value?.action;
     modelId = typeof value?.model_id === 'string' ? value.model_id.trim() : undefined;
     modelRef = typeof value?.model_ref === 'string' ? value.model_ref.trim() : undefined;
-    thinkingLevel = normalizeThinkingLevel(value?.thinking_level);
+    thinkingLevel = readThinkingButtonValue(value?.thinking_level);
     senderOpenId = resolveCardCallbackOperatorId(event.operator);
     openChatId = event.open_chat_id ?? event.context?.open_chat_id;
     openMessageId = event.open_message_id ?? event.context?.open_message_id;
@@ -702,6 +789,13 @@ export function handleModelPickerAction(
         `model picker inject failed account=${accountId} openId=${senderOpenId} action=${action} modelId=${modelId} thinkingLevel=${thinkingLevel}: ${String(err)}`,
       );
     });
+    if (action === ACTION_SET_THINKING && thinkingLevel) {
+      void persistThinkingDefault(thinkingLevel).catch((err) => {
+        log.error(
+          `thinking default persist failed account=${accountId} openId=${senderOpenId} thinkingLevel=${thinkingLevel}: ${String(err)}`,
+        );
+      });
+    }
   });
 
   log.info(
