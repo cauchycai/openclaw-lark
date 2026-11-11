@@ -67,6 +67,12 @@ export async function handleFeishuMessage(params: {
   /** When true, skip the policy gate (mention requirement, allowlist).
    *  Used for synthetic messages that are not real user messages. */
   forceMention?: boolean;
+  /** When true, run the real access-control gate but treat the mention
+   *  requirement as already satisfied. Used for card-action synthetic messages:
+   *  the click is an explicit user action targeting the bot (implicit mention),
+   *  but group/DM admission and sender allowlists must still be enforced.
+   *  Takes precedence over forceMention. */
+  cardActionGate?: boolean;
   /** When true, skip the typing indicator for this dispatch (e.g. reactions). */
   skipTyping?: boolean;
   /**
@@ -85,6 +91,7 @@ export async function handleFeishuMessage(params: {
     accountId,
     replyToMessageId,
     forceMention,
+    cardActionGate,
     skipTyping,
     midRunFollowup,
   } = params;
@@ -177,10 +184,22 @@ export async function handleFeishuMessage(params: {
     accountFeishuCfg?.historyLimit ?? accountScopedCfg.messages?.groupChat?.historyLimit ?? DEFAULT_GROUP_HISTORY_LIMIT,
   );
 
-  // 5. Gate: policy / access-control checks (skipped for synthetic messages)
-  const gate = forceMention
-    ? ({ allowed: true } as GateResult)
-    : await checkMessageGate({ ctx, accountFeishuCfg, account, accountScopedCfg, log });
+  // 5. Gate: policy / access-control checks (skipped for synthetic messages).
+  //    cardActionGate runs the real gate with the mention requirement treated as
+  //    satisfied (the click is an implicit mention) — it takes precedence over
+  //    forceMention so card actions are still subject to group/DM admission and
+  //    sender allowlists.
+  const gate =
+    forceMention && !cardActionGate
+      ? ({ allowed: true } as GateResult)
+      : await checkMessageGate({
+          ctx,
+          accountFeishuCfg,
+          account,
+          accountScopedCfg,
+          log,
+          mentionSatisfied: cardActionGate,
+        });
   if (!gate.allowed) {
     if (gate.reason === 'no_mention') {
       logger.info(`rejected: no bot mention in group ${ctx.chatId}`);
