@@ -219,13 +219,14 @@ export function registerDocCommentsTool(api: OpenClawPluginApi): boolean {
       name: 'feishu_doc_comments',
       label: 'Feishu: Doc Comments',
       description:
-        '【以用户身份】管理云文档评论。支持: ' +
-        '(1) list - 获取评论列表(含完整回复); ' +
-        '(2) list_replies - 获取指定评论的回复列表; ' +
-        '(3) create - 添加全文评论(支持文本、@用户、超链接); ' +
-        '(4) reply - 回复已有评论; ' +
-        '(5) patch - 解决/恢复评论。' +
-        '支持 wiki token。',
+        '管理云文档评论。支持: ' +
+        '(1) list - 获取评论列表(含完整回复)【以应用身份】; ' +
+        '(2) list_replies - 获取指定评论的回复列表【以应用身份】; ' +
+        '(3) create - 添加全文评论(支持文本、@用户、超链接)【以应用身份，评论显示为机器人发出】; ' +
+        '(4) reply - 回复已有评论【以应用身份，回复显示为机器人发出】; ' +
+        '(5) patch - 解决/恢复评论【以用户身份】。' +
+        '支持 wiki token(wiki 转换以用户身份调用)。' +
+        '应用身份操作需要应用开通对应的应用身份(tenant)权限，且机器人需有该文档的访问权限。',
       parameters: DocCommentsSchema,
       async execute(_toolCallId: string, params: unknown) {
         const p = params as DocCommentsParams;

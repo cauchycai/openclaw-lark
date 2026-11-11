@@ -460,15 +460,30 @@ function buildAppScopeMissingCard(params: {
   appId?: string;
   operationId: string;
   brand?: LarkBrand;
+  /** 缺失 scope 所属的 token 类型，决定开放平台申请页打开哪个身份 tab。默认 user。 */
+  tokenType?: 'user' | 'tenant';
 }): Record<string, unknown> {
   const { missingScopes, appId, operationId, brand } = params;
+  const tokenType = params.tokenType ?? 'user';
   const openDomain = brand === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn';
   const authUrl = appId
-    ? `${openDomain}/app/${appId}/auth?q=${encodeURIComponent(missingScopes.join(','))}&op_from=feishu-openclaw&token_type=user`
+    ? `${openDomain}/app/${appId}/auth?q=${encodeURIComponent(missingScopes.join(','))}&op_from=feishu-openclaw&token_type=${tokenType}`
     : `${openDomain}/`;
   const multiUrl = { url: authUrl, pc_url: '', android_url: '', ios_url: '' };
 
   const scopeList = missingScopes.map((s) => `• ${s}`).join('\n');
+  const identityHint =
+    tokenType === 'tenant'
+      ? {
+          zh_cn: '\n\n⚠️ 以上为**应用身份权限（tenant_access_token）**，请在申请页的「应用身份」页签下勾选开通。',
+          en_us:
+            '\n\n⚠️ These are **app identity scopes (tenant_access_token)**. Enable them under the tenant / app identity tab on the request page.',
+        }
+      : {
+          zh_cn: '\n\n以上为**用户身份权限（user_access_token）**，请在申请页的「用户身份」页签下勾选开通。',
+          en_us:
+            '\n\nThese are **user identity scopes (user_access_token)**. Enable them under the user identity tab on the request page.',
+        };
 
   return {
     schema: '2.0',
@@ -488,10 +503,10 @@ function buildAppScopeMissingCard(params: {
       elements: [
         {
           tag: 'markdown',
-          content: `Please request **all** the following permissions to proceed:\n\n${scopeList}`,
+          content: `Please request **all** the following permissions to proceed:\n\n${scopeList}${identityHint.en_us}`,
           i18n_content: {
-            zh_cn: `调用前，请你先申请以下**所有**权限：\n\n${scopeList}`,
-            en_us: `Please request **all** the following permissions to proceed:\n\n${scopeList}`,
+            zh_cn: `调用前，请你先申请以下**所有**权限：\n\n${scopeList}${identityHint.zh_cn}`,
+            en_us: `Please request **all** the following permissions to proceed:\n\n${scopeList}${identityHint.en_us}`,
           },
           text_size: 'normal',
         },
@@ -542,7 +557,16 @@ function buildAppScopeMissingCard(params: {
 /**
  * 构建应用权限引导卡片的"处理中"状态（用户点击按钮后更新）。
  */
-function buildAppAuthProgressCard(): Record<string, unknown> {
+function buildAppAuthProgressCard(params: { willStartUserAuth: boolean }): Record<string, unknown> {
+  const body = params.willStartUserAuth
+    ? {
+        zh_cn: '你的应用权限已开通，正在为你发起用户授权',
+        en_us: 'App permissions ready. Starting user authorization...',
+      }
+    : {
+        zh_cn: '你的应用权限已开通，正在继续执行之前的操作',
+        en_us: 'App permissions ready. Resuming the previous operation...',
+      };
   return {
     schema: '2.0',
     config: { wide_screen_mode: false, ...I18N_CONFIG },
@@ -564,11 +588,8 @@ function buildAppAuthProgressCard(): Record<string, unknown> {
       elements: [
         {
           tag: 'markdown',
-          content: 'App permissions ready. Starting user authorization...',
-          i18n_content: {
-            zh_cn: '你的应用权限已开通，正在为你发起用户授权',
-            en_us: 'App permissions ready. Starting user authorization...',
-          },
+          content: body.en_us,
+          i18n_content: body,
           text_size: 'normal',
         },
       ],
@@ -622,7 +643,13 @@ async function sendAppScopeCard(params: {
     const { operationId: activeOpId, flow: activeFlow } = activeEntry;
     // 更新已有卡片的内容（合并后的 scope）
     const newOperationId = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    const card = buildAppScopeMissingCard({ missingScopes, appId, operationId: newOperationId, brand: account.brand });
+    const card = buildAppScopeMissingCard({
+      missingScopes,
+      appId,
+      operationId: newOperationId,
+      brand: account.brand,
+      tokenType,
+    });
     const newSeq = activeFlow.sequence + 1;
 
     // TOCTOU 修复：先原子迁移（同步操作），再 await 更新卡片
@@ -649,8 +676,9 @@ async function sendAppScopeCard(params: {
             `seq=${newSeq}, scopes=[${missingScopes.join(', ')}]`,
         );
 
-        // 更新 sequence（migrate 不处理 sequence）
+        // 更新 sequence / tokenType（migrate 不处理这两个字段）
         migrated.sequence = newSeq;
+        migrated.tokenType = tokenType;
 
         return json({
           awaiting_app_authorization: true,
@@ -671,7 +699,7 @@ async function sendAppScopeCard(params: {
 
   const operationId = Date.now().toString(36) + Math.random().toString(36).slice(2);
 
-  const card = buildAppScopeMissingCard({ missingScopes, appId, operationId, brand: account.brand });
+  const card = buildAppScopeMissingCard({ missingScopes, appId, operationId, brand: account.brand, tokenType });
 
   // 创建 CardKit 卡片实体
   const cardId = await createCardEntity({ cfg, card, accountId });
@@ -822,7 +850,30 @@ export async function handleCardAction(data: unknown, cfg: ClawdbotConfig, accou
   //   { card: { type: "raw", data: { schema: "2.0", ... } } }
   // 注意：不能在回调返回前调用 card.update API，飞书文档明确说明
   // "延时更新必须在响应回调请求之后执行，并行执行或提前执行会出现更新失败"。
-  const successCard = buildAppAuthProgressCard();
+  //
+  // 先在同步路径收集需要用户授权的 scope，以便卡片文案准确反映接下来是否会发起用户授权。
+  // 收集所有来源的 scope（过滤 offline_access：仅 app 级需要，device-flow 自动追加）。
+  // tenant 流程的 scope 由应用身份调用，不需要用户 OAuth，不并入用户授权。
+  const mergedScopes = new Set(
+    flow.tokenType === 'tenant' ? [] : flow.requiredScopes.filter((s) => s !== 'offline_access'),
+  );
+  if (flow.ticket.senderOpenId) {
+    // 来源 1: 延迟用户授权队列（已在上方提前取出，见 consumedDeferred）
+    if (consumedDeferred) {
+      for (const s of consumedDeferred.scopes) mergedScopes.add(s);
+    }
+
+    // 来源 2: 现有 user auth batch（向后兼容，处理未被延迟拦截的 user auth）
+    const userBatchKey = `user:${flow.accountId}:${flow.ticket.senderOpenId}:${flow.ticket.messageId}`;
+    const userBatch = authBatches.get(userBatchKey);
+    if (userBatch) {
+      for (const s of userBatch.scopes) mergedScopes.add(s);
+      log.info(`merged user batch scopes into app auth completion: [${[...mergedScopes].join(', ')}]`);
+    }
+  }
+  const willStartUserAuth = !!flow.ticket.senderOpenId && mergedScopes.size > 0;
+
+  const successCard = buildAppAuthProgressCard({ willStartUserAuth });
 
   // 后台异步：回调响应之后再执行 API 更新 + OAuth
   setImmediate(async () => {
@@ -846,23 +897,7 @@ export async function handleCardAction(data: unknown, cfg: ClawdbotConfig, accou
         return;
       }
 
-      // 收集所有来源的 scope（过滤 offline_access：仅 app 级需要，device-flow 自动追加）
-      const mergedScopes = new Set(flow.requiredScopes.filter((s) => s !== 'offline_access'));
-
-      // 来源 1: 延迟用户授权队列（已在同步路径中提前取出，见 consumedDeferred）
-      if (consumedDeferred) {
-        for (const s of consumedDeferred.scopes) mergedScopes.add(s);
-      }
-
-      // 来源 2: 现有 user auth batch（向后兼容，处理未被延迟拦截的 user auth）
-      const userBatchKey = `user:${flow.accountId}:${flow.ticket.senderOpenId}:${flow.ticket.messageId}`;
-      const userBatch = authBatches.get(userBatchKey);
-      if (userBatch) {
-        for (const s of userBatch.scopes) mergedScopes.add(s);
-        log.info(`merged user batch scopes into app auth completion: [${[...mergedScopes].join(', ')}]`);
-      }
-
-      if (mergedScopes.size === 0) {
+      if (!willStartUserAuth) {
         // 无业务 scope 需要用户授权（例如 offline_access 是唯一缺失的应用权限，
         // 且没有其他工具产生用户授权需求）。跳过 OAuth，直接发合成消息触发 AI 重试，
         // 重试时工具会自然发现需要用户授权并发起正确的 OAuth 流程。
@@ -1069,7 +1104,8 @@ export async function handleInvokeErrorWithAutoAuth(err: unknown, cfg: ClawdbotC
           // ★ 将工具的全部所需 scope 加入延迟用户授权队列。
           // 应用权限完成后 handleCardAction 会消费这些 scope，
           // 与 flow.requiredScopes（仅 app 缺失的）合并，一次性发起 OAuth。
-          if (senderOpenId && appScopeErr.allRequiredScopes?.length) {
+          // tenant 调用不使用用户 token，无需排队用户授权。
+          if (senderOpenId && appScopeErr.tokenType !== 'tenant' && appScopeErr.allRequiredScopes?.length) {
             addToDeferredUserAuth(ticket, appScopeErr.allRequiredScopes, acct, cfg);
             log.info(`AppScopeMissingError → deferred allRequiredScopes=[${appScopeErr.allRequiredScopes.join(', ')}]`);
           }
