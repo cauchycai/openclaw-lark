@@ -826,10 +826,23 @@ export class StreamingCardController {
     const idleEffectiveCardId = this.cardKit.cardKitCardId ?? this.cardKit.originalCardKitCardId;
     try {
       if (this.cardKit.cardMessageId) {
-        const isNoReplyLeak =
-          !this.text.completedText && SILENT_REPLY_TOKEN.startsWith(this.text.accumulatedText.trim());
-        const displayText =
-          this.text.completedText || (isNoReplyLeak ? '' : this.text.accumulatedText) || EMPTY_REPLY_FALLBACK_TEXT;
+        const answerText = (this.text.completedText || this.text.accumulatedText).trim();
+        // The runtime can filter NO_REPLY before deliver, and media-only replies
+        // bypass the text controller. Neither should leave an early progress card.
+        if (!answerText || SILENT_REPLY_TOKEN.startsWith(answerText)) {
+          if (idleEffectiveCardId) {
+            await this.closeCardKitStreamingMode(idleEffectiveCardId, source);
+          }
+          const response = await LarkClient.fromCfg(this.deps.cfg, this.deps.accountId).sdk.im.message.delete({
+            path: { message_id: this.cardKit.cardMessageId },
+          });
+          if (response.code != null && response.code !== 0) {
+            throw new Error(`progress card recall failed: ${response.code} ${response.msg}`);
+          }
+          this.cardKit.cardMessageId = null;
+          return;
+        }
+        const displayText = this.text.completedText || this.text.accumulatedText || EMPTY_REPLY_FALLBACK_TEXT;
         if (!this.text.completedText && !this.text.accumulatedText) {
           log.warn('reply completed without visible text, using empty-reply fallback');
         }

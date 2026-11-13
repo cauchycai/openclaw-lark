@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  deleteMessage: vi.fn().mockResolvedValue({ code: 0 }),
   updateCardKitCard: vi.fn(),
   setCardStreamingMode: vi.fn(),
 }));
@@ -10,7 +11,9 @@ vi.mock('openclaw/plugin-sdk/agent-runtime', () => ({ resolveDefaultAgentId: () 
 vi.mock('../src/core/lark-logger', () => ({
   larkLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
-vi.mock('../src/core/lark-client', () => ({ LarkClient: {} }));
+vi.mock('../src/core/lark-client', () => ({
+  LarkClient: { fromCfg: () => ({ sdk: { im: { message: { delete: mocks.deleteMessage } } } }) },
+}));
 vi.mock('../src/core/shutdown-hooks', () => ({ registerShutdownHook: () => () => {} }));
 vi.mock('../src/messaging/outbound/send', () => ({
   sendCardFeishu: vi.fn(),
@@ -88,6 +91,34 @@ function createController(): StreamingCardController {
 }
 
 describe('StreamingCardController final CardKit cleanup', () => {
+  it.each([
+    ['filtered silent reply', '', '', 'card_1'],
+    ['silent partial reply', '__silent__', '', 'card_1'],
+    ['silent delivered reply', '', '__silent__', 'card_1'],
+    ['media-only reply', '', '', null],
+  ])('recalls the early card for a %s', async (_label, partial, completed, cardId) => {
+    mocks.deleteMessage.mockClear();
+    mocks.updateCardKitCard.mockReset();
+    mocks.setCardStreamingMode.mockReset();
+    mocks.setCardStreamingMode.mockResolvedValue(undefined);
+    const controller = createController() as unknown as {
+      cardKit: { cardKitCardId: string | null; originalCardKitCardId: string | null; cardMessageId: string | null };
+      text: { accumulatedText: string; completedText: string };
+      finalizeCompleteCard(source: string): Promise<void>;
+    };
+    controller.cardKit.cardKitCardId = cardId;
+    controller.cardKit.originalCardKitCardId = cardId;
+    controller.cardKit.cardMessageId = 'om_progress';
+    controller.text.accumulatedText = partial;
+    controller.text.completedText = completed;
+
+    await controller.finalizeCompleteCard('test');
+
+    expect(mocks.deleteMessage).toHaveBeenCalledWith({ path: { message_id: 'om_progress' } });
+    expect(mocks.updateCardKitCard).not.toHaveBeenCalled();
+    expect(controller.cardKit.cardMessageId).toBeNull();
+  });
+
   it('uses a compact completed fallback card when the full final card update fails', async () => {
     mocks.updateCardKitCard.mockReset();
     mocks.updateCardKitCard.mockRejectedValueOnce(new Error('card content too large'));
