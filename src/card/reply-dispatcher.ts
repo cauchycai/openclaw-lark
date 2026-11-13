@@ -238,6 +238,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
     onReplyStart: async () => {
       if (shouldSkip('onReplyStart')) return;
+      // Acknowledge work even when reasoning is hidden or progress callbacks are absent.
+      await controller?.ensureCardCreated();
       await typingCallbacks.onReplyStart?.();
     },
 

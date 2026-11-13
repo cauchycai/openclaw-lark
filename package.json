@@ -1,9 +1,9 @@
 {
   "name": "@larksuite/openclaw-lark",
-  "version": "2026.11.11",
+  "version": "2026.11.13",
   "openclawFork": {
     "name": "turingclaw",
-    "version": "2026.11.11.1"
+    "version": "2026.11.13.1"
   },
   "description": "OpenClaw Lark/Feishu channel plugin",
   "type": "module",

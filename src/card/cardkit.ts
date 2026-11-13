@@ -264,7 +264,7 @@ export async function setCardStreamingMode(params: {
   // SDK 返回类型不完整，运行时包含 code/msg 字段
   const resp = (await client.cardkit.v1.card.settings({
     data: {
-      settings: JSON.stringify({ streaming_mode: streamingMode }),
+      settings: JSON.stringify({ config: { streaming_mode: streamingMode } }),
       sequence,
     },
     path: { card_id: cardId },

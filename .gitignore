@@ -28,3 +28,4 @@ src/tools/docs/
 .eslintcache
 
 /openclaw-main
+/artifacts/

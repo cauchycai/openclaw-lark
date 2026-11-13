@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { replyModeState } = vi.hoisted(() => ({
+const { replyModeState, startHook } = vi.hoisted(() => ({
+  startHook: { current: undefined as undefined | (() => Promise<void>) },
   replyModeState: { mode: 'streaming' as 'streaming' | 'static' },
 }));
 
@@ -59,7 +60,9 @@ vi.mock('../src/core/lark-client', () => ({
           chunkTextWithMode: (text: string) => (text ? [text] : []),
         },
         reply: {
-          createReplyDispatcherWithTyping: (hooks: { deliver: (payload: unknown, ctx?: { kind?: string }) => Promise<void> }) => ({
+          createReplyDispatcherWithTyping: (hooks: { onReplyStart: () => Promise<void>; deliver: (payload: unknown, ctx?: { kind?: string }) => Promise<void> }) => {
+            startHook.current = hooks.onReplyStart;
+            return ({
             dispatcher: {
               sendToolResult: (payload: unknown) => {
                 void hooks.deliver(payload, { kind: 'tool' });
@@ -76,7 +79,7 @@ vi.mock('../src/core/lark-client', () => ({
             },
             replyOptions: {},
             markDispatchIdle: () => {},
-          }),
+          }); },
           resolveHumanDelayConfig: () => null,
         },
       },
@@ -139,6 +142,19 @@ beforeEach(() => {
 });
 
 describe('reply-dispatcher tool_use mode', () => {
+  it.each(['streaming', 'static'] as const)('acknowledges work early only in %s mode', async (mode) => {
+    replyModeState.mode = mode;
+    createFeishuReplyDispatcher({
+      cfg: {} as never, agentId: 'main', sessionKey: 'agent:main:feishu:group:chat',
+      chatId: 'chat', accountId: 'default', chatType: 'group', skipTyping: true,
+      toolUseDisplay: { mode: 'off', showToolUse: true, showToolResultDetails: false, showFullPaths: false },
+    });
+    expect(controllerSpies.ensureCardCreated).not.toHaveBeenCalled();
+    await startHook.current?.();
+    expect(controllerSpies.ensureCardCreated).toHaveBeenCalledTimes(mode === 'streaming' ? 1 : 0);
+    expect(controllerSpies.onDeliver).not.toHaveBeenCalled();
+  });
+
   it('keeps reasoning streaming callbacks alongside tool_use mode', async () => {
     const result = createFeishuReplyDispatcher({
       cfg: {} as never,
